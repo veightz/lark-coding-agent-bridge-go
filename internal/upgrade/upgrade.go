@@ -40,14 +40,21 @@ func Run(opts Options) error {
 		return fmt.Errorf("git fetch 失败: %w", err)
 	}
 	local, _ := gitOutput(src, "rev-parse", "HEAD")
-	remote, err := gitOutput(src, "rev-parse", "@{u}")
-	if err != nil {
-		return fmt.Errorf("当前分支没有跟踪远端（git rev-parse @{u} 失败）: %w", err)
+	// No upstream (local-only repo): fall back to comparing the binary
+	// against local HEAD and skip the pull step.
+	remote, remoteErr := gitOutput(src, "rev-parse", "@{u}")
+	hasUpstream := remoteErr == nil
+	if !hasUpstream {
+		remote = local
 	}
 	current := buildinfo.Current()
 	fmt.Fprintf(out, "当前二进制: %s\n", current.Short())
 	fmt.Fprintf(out, "本地 HEAD:  %s\n", short(local))
-	fmt.Fprintf(out, "远端 HEAD:  %s\n", short(remote))
+	if hasUpstream {
+		fmt.Fprintf(out, "远端 HEAD:  %s\n", short(remote))
+	} else {
+		fmt.Fprintln(out, "（本地仓库无远端跟踪，按本地 HEAD 比对并跳过 pull）")
+	}
 
 	if local == remote && current.Commit == local && !current.Dirty {
 		fmt.Fprintln(out, "已是最新，无需升级。")
@@ -64,7 +71,7 @@ func Run(opts Options) error {
 	}
 
 	// Pull (fast-forward only: never clobber local work).
-	if local != remote {
+	if hasUpstream && local != remote {
 		if err := git(src, "pull", "--ff-only"); err != nil {
 			return fmt.Errorf("git pull --ff-only 失败（本地可能有未提交改动）: %w", err)
 		}
