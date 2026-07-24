@@ -1,0 +1,1006 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>lark-coding-agent-bridge-go · 技术设计文档</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --card:#ffffff; --ink:#1f2328; --ink2:#57606a; --line:#d0d7de;
+    --blue:#2563eb; --green:#16a34a; --orange:#ea580c; --purple:#7c3aed; --red:#dc2626; --teal:#0d9488;
+    --code-bg:#f0f3f6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",sans-serif;
+    line-height:1.7;font-size:15px}
+  .wrap{max-width:1000px;margin:0 auto;padding:40px 28px 80px}
+  header.doc{border-bottom:1px solid var(--line);padding-bottom:24px;margin-bottom:28px}
+  header.doc h1{font-size:28px;margin:0 0 8px}
+  header.doc .sub{color:var(--ink2);font-size:14px}
+  .badge{display:inline-block;background:#eaf1ff;color:var(--blue);border:1px solid #c7dbff;
+    border-radius:12px;padding:1px 10px;font-size:12px;margin-right:6px;vertical-align:2px}
+  nav.toc{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 22px;margin-bottom:32px}
+  nav.toc h2{margin:0 0 8px;font-size:15px;color:var(--ink2)}
+  nav.toc ol{margin:0;padding-left:22px}
+  nav.toc a{color:var(--blue);text-decoration:none}
+  nav.toc a:hover{text-decoration:underline}
+  h2{font-size:22px;margin:44px 0 14px;padding-top:10px;border-top:2px solid var(--line)}
+  h2 .no{color:var(--blue);margin-right:8px}
+  h3{font-size:17px;margin:26px 0 10px}
+  p{margin:10px 0}
+  ul,ol{margin:8px 0;padding-left:24px}
+  li{margin:4px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+    background:var(--code-bg);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+  pre{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:14px 18px;overflow-x:auto;font-size:13px;line-height:1.6}
+  pre code{background:none;border:none;padding:0;color:inherit}
+  table{border-collapse:collapse;width:100%;margin:14px 0;background:var(--card);font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 12px;text-align:left;vertical-align:top}
+  th{background:#eef2f7}
+  tr:nth-child(even) td{background:#fafbfc}
+  .fig{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin:18px 0;overflow-x:auto}
+  .fig .cap{text-align:center;color:var(--ink2);font-size:13px;margin-top:10px}
+  .fig svg{display:block;margin:0 auto;max-width:100%;height:auto}
+  .note{background:#fff8e6;border:1px solid #f0d080;border-radius:10px;padding:12px 16px;margin:14px 0;font-size:14px}
+  .ok{color:var(--green);font-weight:600}
+  .warn{color:var(--orange);font-weight:600}
+  .bad{color:var(--red);font-weight:600}
+  footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);color:var(--ink2);font-size:13px;text-align:center}
+  /* SVG 通用 */
+  svg text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="doc">
+  <h1>lark-coding-agent-bridge-go <span class="badge">技术设计文档</span></h1>
+  <div class="sub">飞书 / Lark ↔ 本地 coding agent CLI 桥接器 · Go 实现（TS 项目 lark-channel-bridge 的 Go 复刻）· 面向项目 Owner 的设计 Review</div>
+</header>
+
+<nav class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#s1">项目概述</a></li>
+    <li><a href="#s2">总体架构</a></li>
+    <li><a href="#s3">Agent 适配层：四种适配器与协议时序</a></li>
+    <li><a href="#s4">设计决策：为什么不用 ACP</a></li>
+    <li><a href="#s5">流式卡片机制</a></li>
+    <li><a href="#s6">健壮性设计：三层防护</a></li>
+    <li><a href="#s7">Dashboard 与进程注册表</a></li>
+    <li><a href="#s8">自升级（upgrade）</a></li>
+    <li><a href="#s9">数据目录布局</a></li>
+  </ol>
+</nav>
+
+<h2 id="s1"><span class="no">1</span>项目概述</h2>
+<p>本项目把飞书消息桥接到本机运行的 coding agent CLI（claude / codex / pi / opencode），并以<b>流式卡片</b>的形式把 agent 的思考、文本输出、工具调用过程实时回投到飞书会话中。它是 TS 项目 <code>lark-channel-bridge</code> 的 Go 复刻。</p>
+<p>核心能力：</p>
+<ul>
+  <li><b>扫码注册向导</b>：复刻 registerApp 协议（POST <code>accounts.feishu.cn/oauth/v1/app/registration</code>，begin → 二维码 → poll），零手工配置创建飞书应用。</li>
+  <li><b>多 profile</b>：配置与会话/工作区隔离存储在 <code>~/.lark-coding-agent-bridge/</code> 下。</li>
+  <li><b>四种 agent 适配器</b>：spawn-per-message（claude、codex）与常驻进程（pi RPC、opencode HTTP+SSE）两类形态，统一为同一事件流抽象。</li>
+  <li><b>流式卡片</b>：CardKit 2.0，400ms 节流全卡更新，飞书客户端呈现打字机效果。</li>
+  <li><b>三层健壮性</b>：SDK 重连 + supervisor 半死连接检测 + run 级 idle 看门狗。</li>
+  <li><b>运维闭环</b>：进程注册表 + dashboard + 自升级。</li>
+</ul>
+
+<h2 id="s2"><span class="no">2</span>总体架构</h2>
+<p>单一二进制 <code>cmd/lark-coding-agent-bridge</code> 提供 <code>run</code> / <code>dashboard</code> / <code>upgrade</code> / <code>version</code> 四个子命令。<code>run</code> 启动桥接主循环：通过 WS 长连接接收飞书事件，消息经归一化、防抖合并后驱动 agent 运行，运行事件流经状态机归约渲染为卡片，再经节流后通过 CardKit API 推回飞书。</p>
+
+<div class="fig">
+<svg viewBox="0 0 960 760" width="900" role="img" aria-label="总体架构图">
+  <defs>
+    <marker id="ar1" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#57606a"/>
+    </marker>
+    <marker id="ar1b" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#2563eb"/>
+    </marker>
+  </defs>
+
+  <!-- 飞书云端 -->
+  <rect x="230" y="20" width="500" height="64" rx="10" fill="#eaf1ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="480" y="45" text-anchor="middle" font-size="15" font-weight="700" fill="#1e40af">飞书 / Lark OpenAPI 云端</text>
+  <text x="480" y="68" text-anchor="middle" font-size="12" fill="#3b5bdb">WS 事件长连接 · REST API（发消息/附件） · CardKit 流式卡片</text>
+
+  <!-- 主容器 -->
+  <rect x="20" y="120" width="700" height="540" rx="12" fill="#ffffff" stroke="#d0d7de" stroke-width="1.5"/>
+  <text x="40" y="145" font-size="13" font-weight="700" fill="#57606a">bridge 进程（单二进制，多 profile 可多实例并存）</text>
+
+  <!-- CLI 入口 -->
+  <rect x="60" y="158" width="620" height="46" rx="8" fill="#f3f0ff" stroke="#7c3aed" stroke-width="1.2"/>
+  <text x="370" y="177" text-anchor="middle" font-size="13" font-weight="700" fill="#5b21b6">cmd/lark-coding-agent-bridge（CLI 入口）</text>
+  <text x="370" y="195" text-anchor="middle" font-size="11.5" fill="#6d28d9">子命令：run · dashboard · upgrade · version</text>
+
+  <!-- 横向三盒 -->
+  <rect x="60" y="222" width="196" height="52" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.2"/>
+  <text x="158" y="243" text-anchor="middle" font-size="12.5" font-weight="700" fill="#9a3412">internal/onboard</text>
+  <text x="158" y="261" text-anchor="middle" font-size="11" fill="#c2410c">扫码注册向导</text>
+
+  <rect x="272" y="222" width="196" height="52" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.2"/>
+  <text x="370" y="243" text-anchor="middle" font-size="12.5" font-weight="700" fill="#9a3412">config + state</text>
+  <text x="370" y="261" text-anchor="middle" font-size="11" fill="#c2410c">配置 / 会话 / 工作区</text>
+
+  <rect x="484" y="222" width="196" height="52" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.2"/>
+  <text x="582" y="243" text-anchor="middle" font-size="12.5" font-weight="700" fill="#9a3412">internal/upgrade</text>
+  <text x="582" y="261" text-anchor="middle" font-size="11" fill="#c2410c">自升级</text>
+
+  <!-- supervisor + lark -->
+  <rect x="60" y="292" width="300" height="58" rx="8" fill="#ecfdf5" stroke="#16a34a" stroke-width="1.2"/>
+  <text x="210" y="313" text-anchor="middle" font-size="12.5" font-weight="700" fill="#15803d">internal/supervisor</text>
+  <text x="210" y="331" text-anchor="middle" font-size="11" fill="#16a34a">WS 连接监督 · 60s 存活探测 · 强制重建</text>
+
+  <rect x="380" y="292" width="300" height="58" rx="8" fill="#eaf1ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="530" y="313" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1e40af">internal/lark（oapi-sdk-go v3 封装）</text>
+  <text x="530" y="331" text-anchor="middle" font-size="11" fill="#3b5bdb">WS 收事件 · REST 发消息 · CardKit · 附件下载</text>
+
+  <!-- bridge 核心 -->
+  <rect x="60" y="368" width="620" height="62" rx="8" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="370" y="390" text-anchor="middle" font-size="13" font-weight="700" fill="#991b1b">internal/bridge（消息中枢）</text>
+  <text x="370" y="410" text-anchor="middle" font-size="11.5" fill="#b91c1c">消息归一化 → 600ms 防抖合并队列 → 斜杠命令（/new /cd /ws /stop /status /help）· 会话按 scope 隔离</text>
+
+  <!-- card -->
+  <rect x="60" y="448" width="620" height="52" rx="8" fill="#f0fdfa" stroke="#0d9488" stroke-width="1.2"/>
+  <text x="370" y="469" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0f766e">internal/card（流式卡片）</text>
+  <text x="370" y="487" text-anchor="middle" font-size="11" fill="#0d9488">运行状态机 Reduce → CardKit 2.0 渲染 → 400ms 节流串行更新</text>
+
+  <!-- agent adapters -->
+  <g>
+    <rect x="60" y="518" width="145" height="52" rx="8" fill="#f6f8fa" stroke="#57606a" stroke-width="1.2"/>
+    <text x="132" y="539" text-anchor="middle" font-size="12" font-weight="700" fill="#1f2328">claude 适配器</text>
+    <text x="132" y="556" text-anchor="middle" font-size="10.5" fill="#57606a">spawn-per-msg</text>
+
+    <rect x="215" y="518" width="145" height="52" rx="8" fill="#f6f8fa" stroke="#57606a" stroke-width="1.2"/>
+    <text x="287" y="539" text-anchor="middle" font-size="12" font-weight="700" fill="#1f2328">codex 适配器</text>
+    <text x="287" y="556" text-anchor="middle" font-size="10.5" fill="#57606a">spawn-per-msg</text>
+
+    <rect x="370" y="518" width="145" height="52" rx="8" fill="#f6f8fa" stroke="#7c3aed" stroke-width="1.2"/>
+    <text x="442" y="539" text-anchor="middle" font-size="12" font-weight="700" fill="#5b21b6">pi 适配器</text>
+    <text x="442" y="556" text-anchor="middle" font-size="10.5" fill="#6d28d9">常驻 RPC 进程</text>
+
+    <rect x="525" y="518" width="155" height="52" rx="8" fill="#f6f8fa" stroke="#7c3aed" stroke-width="1.2"/>
+    <text x="602" y="539" text-anchor="middle" font-size="12" font-weight="700" fill="#5b21b6">opencode 适配器</text>
+    <text x="602" y="556" text-anchor="middle" font-size="10.5" fill="#6d28d9">常驻 HTTP+SSE</text>
+  </g>
+  <text x="60" y="512" font-size="11.5" font-weight="700" fill="#57606a">internal/agent</text>
+
+  <!-- 本地 CLI -->
+  <g>
+    <rect x="60" y="606" width="145" height="40" rx="8" fill="#fff" stroke="#94a3b8" stroke-dasharray="5 3" stroke-width="1.2"/>
+    <text x="132" y="631" text-anchor="middle" font-size="11.5" fill="#475569" class="mono">claude CLI</text>
+    <rect x="215" y="606" width="145" height="40" rx="8" fill="#fff" stroke="#94a3b8" stroke-dasharray="5 3" stroke-width="1.2"/>
+    <text x="287" y="631" text-anchor="middle" font-size="11.5" fill="#475569" class="mono">codex CLI</text>
+    <rect x="370" y="606" width="145" height="40" rx="8" fill="#fff" stroke="#94a3b8" stroke-dasharray="5 3" stroke-width="1.2"/>
+    <text x="442" y="631" text-anchor="middle" font-size="11.5" fill="#475569" class="mono">pi --mode rpc</text>
+    <rect x="525" y="606" width="155" height="40" rx="8" fill="#fff" stroke="#94a3b8" stroke-dasharray="5 3" stroke-width="1.2"/>
+    <text x="602" y="631" text-anchor="middle" font-size="11.5" fill="#475569" class="mono">opencode serve</text>
+  </g>
+  <text x="60" y="600" font-size="11.5" font-weight="700" fill="#57606a">本机 agent 进程</text>
+
+  <!-- registry / dashboard 侧栏 -->
+  <rect x="750" y="292" width="190" height="110" rx="10" fill="#fff" stroke="#d0d7de" stroke-width="1.5"/>
+  <text x="845" y="315" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1f2328">internal/registry</text>
+  <text x="845" y="335" text-anchor="middle" font-size="11" fill="#57606a">processes.json</text>
+  <text x="845" y="352" text-anchor="middle" font-size="11" fill="#57606a">注册 · 15s 心跳 · 退出注销</text>
+  <text x="845" y="369" text-anchor="middle" font-size="11" fill="#57606a">读取时按 PID 活性清理</text>
+
+  <rect x="750" y="430" width="190" height="70" rx="10" fill="#fff" stroke="#d0d7de" stroke-width="1.5"/>
+  <text x="845" y="453" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1f2328">dashboard 子命令</text>
+  <text x="845" y="472" text-anchor="middle" font-size="11" fill="#57606a">表格展示进程 / 版本</text>
+  <text x="845" y="489" text-anchor="middle" font-size="11" fill="#57606a">不一致行标 ⚠︎</text>
+
+  <!-- 数据目录 -->
+  <rect x="750" y="528" width="190" height="118" rx="10" fill="#fdf4ff" stroke="#a855f7" stroke-width="1.2"/>
+  <text x="845" y="550" text-anchor="middle" font-size="12" font-weight="700" fill="#7e22ce">~/.lark-coding-agent-bridge/</text>
+  <text x="845" y="570" text-anchor="middle" font-size="10.5" fill="#9333ea" class="mono">config.json</text>
+  <text x="845" y="587" text-anchor="middle" font-size="10.5" fill="#9333ea" class="mono">registry/processes.json</text>
+  <text x="845" y="604" text-anchor="middle" font-size="10.5" fill="#9333ea" class="mono">profiles/&lt;name&gt;/…</text>
+  <text x="845" y="621" text-anchor="middle" font-size="10.5" fill="#9333ea" class="mono">workspaces/&lt;name&gt;/…</text>
+
+  <!-- 连线 -->
+  <!-- 云端 <-> lark -->
+  <line x1="560" y1="84" x2="560" y2="290" stroke="#2563eb" stroke-width="1.8" marker-end="url(#ar1b)"/>
+  <line x1="500" y1="290" x2="500" y2="86" stroke="#2563eb" stroke-width="1.8" marker-end="url(#ar1b)"/>
+  <text x="516" y="180" font-size="10.5" fill="#2563eb">REST / CardKit ↑</text>
+  <text x="568" y="180" font-size="10.5" fill="#2563eb">↓ WS 事件流</text>
+
+  <!-- CLI -> bridge -->
+  <line x1="370" y1="204" x2="370" y2="366" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar1)"/>
+  <text x="380" y="218" font-size="10.5" fill="#57606a">run</text>
+
+  <!-- config -> bridge -->
+  <line x1="290" y1="274" x2="300" y2="366" stroke="#ea580c" stroke-width="1.2" marker-end="url(#ar1)"/>
+
+  <!-- supervisor -> lark -->
+  <line x1="360" y1="321" x2="378" y2="321" stroke="#16a34a" stroke-width="1.5" marker-end="url(#ar1)"/>
+
+  <!-- bridge -> card -->
+  <line x1="300" y1="430" x2="300" y2="446" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar1)"/>
+  <!-- card -> lark (绕右侧) -->
+  <path d="M 680 474 L 705 474 L 705 360 L 682 336" fill="none" stroke="#0d9488" stroke-width="1.5" marker-end="url(#ar1)"/>
+  <text x="690" y="420" font-size="10" fill="#0d9488" transform="rotate(90 690 420)"></text>
+  <text x="706" y="420" font-size="10" fill="#0d9488" transform="rotate(-90 712 420)">CardKit 更新</text>
+
+  <!-- bridge -> agent -->
+  <line x1="440" y1="430" x2="440" y2="516" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar1)"/>
+  <!-- agent -> 本地进程 -->
+  <line x1="132" y1="570" x2="132" y2="604" stroke="#94a3b8" stroke-width="1.3" marker-end="url(#ar1)"/>
+  <line x1="287" y1="570" x2="287" y2="604" stroke="#94a3b8" stroke-width="1.3" marker-end="url(#ar1)"/>
+  <line x1="442" y1="570" x2="442" y2="604" stroke="#94a3b8" stroke-width="1.3" marker-end="url(#ar1)"/>
+  <line x1="602" y1="570" x2="602" y2="604" stroke="#94a3b8" stroke-width="1.3" marker-end="url(#ar1)"/>
+  <text x="610" y="590" font-size="10" fill="#64748b">事件流 ↑</text>
+
+  <!-- lark 事件 -> bridge -->
+  <line x1="530" y1="350" x2="530" y2="366" stroke="#2563eb" stroke-width="1.5" marker-end="url(#ar1b)"/>
+
+  <!-- bridge -> registry -->
+  <path d="M 680 399 L 748 360" fill="none" stroke="#57606a" stroke-width="1.3" marker-end="url(#ar1)"/>
+  <text x="700" y="372" font-size="10" fill="#57606a">写入/心跳</text>
+  <!-- registry -> dashboard -->
+  <line x1="845" y1="402" x2="845" y2="428" stroke="#57606a" stroke-width="1.3" marker-end="url(#ar1)"/>
+  <!-- registry -> 数据目录 -->
+  <line x1="845" y1="402" x2="845" y2="526" stroke="#a855f7" stroke-width="1.1" stroke-dasharray="4 3" marker-end="url(#ar1)"/>
+</svg>
+<div class="cap">图 1 · 总体架构：单进程内部分层 + 本机 agent 进程 + 注册表/dashboard 侧链</div>
+</div>
+
+<ul>
+  <li><b>事件入口</b>：<code>internal/lark</code> 基于官方 oapi-sdk-go v3 的 WS 长连接接收消息事件；REST 用于发消息、下载附件；cardkit 用于流式卡片。</li>
+  <li><b>消息中枢</b>：<code>internal/bridge</code> 负责消息归一化、600ms 防抖合并（连续多条消息合并为一次运行）、斜杠命令分流；会话按 <b>scope</b>（<code>chat</code> 或 <code>chat:thread</code>）隔离。</li>
+  <li><b>运行编排</b>：一次运行 = 下载附件 → 构造 prompt → 调 agent 适配器 → 事件流经 <code>card.Reduce</code> 状态机 → 渲染 → 节流推卡 → 会话持久化。</li>
+  <li><b>监督</b>：<code>internal/supervisor</code> 独立于 SDK 重连，做 REST 存活探测并强制重建半死连接。</li>
+</ul>
+
+<h2 id="s3"><span class="no">3</span>Agent 适配层：四种适配器与协议时序</h2>
+<p>适配层是本项目的设计核心。四种 agent CLI 形态差异极大：两条是「每条消息起一个进程」的 spawn-per-message 模式，两条是「常驻服务」模式。适配层把它们统一收敛为同一抽象：</p>
+<ul>
+  <li><code>Adapter</code> 接口：<code>Run / Stop / WaitExit</code>。</li>
+  <li>统一事件流 <code>Event{Type: system | text | thinking | tool_use | tool_result | usage | done | error}</code> —— 上层（卡片状态机、bridge）只消费这一种事件，不感知 agent 差异。</li>
+  <li><code>SessionResetter</code> 接口：常驻型适配器实现它，用于 <code>/new</code> 重置会话。</li>
+</ul>
+
+<h3>3.1 四种适配器对比</h3>
+<div class="fig">
+<svg viewBox="0 0 960 380" width="900" role="img" aria-label="四种适配器对比图">
+  <defs>
+    <marker id="ar2" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <!-- 分类带 -->
+  <rect x="20" y="16" width="450" height="30" rx="6" fill="#eef2f7"/>
+  <text x="245" y="36" text-anchor="middle" font-size="12.5" font-weight="700" fill="#57606a">spawn-per-message（每条消息 spawn 一个进程）</text>
+  <rect x="490" y="16" width="450" height="30" rx="6" fill="#f3f0ff"/>
+  <text x="715" y="36" text-anchor="middle" font-size="12.5" font-weight="700" fill="#6d28d9">常驻型（每 scope / 每 profile 一个长驻进程）</text>
+
+  <!-- claude -->
+  <rect x="20" y="58" width="220" height="270" rx="10" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+  <rect x="20" y="58" width="220" height="40" rx="10" fill="#eaf1ff"/>
+  <text x="130" y="83" text-anchor="middle" font-size="14" font-weight="700" fill="#1e40af">claude</text>
+  <text x="34" y="118" font-size="11.5" fill="#1f2328" font-weight="700">协议：stdout stream-json</text>
+  <text x="34" y="140" font-size="11" fill="#57606a">system.init / assistant</text>
+  <text x="34" y="157" font-size="11" fill="#57606a">/ user / result 逐行</text>
+  <text x="34" y="182" font-size="11.5" fill="#1f2328" font-weight="700">会话保持</text>
+  <text x="34" y="202" font-size="11" fill="#57606a">--resume &lt;sessionId&gt;</text>
+  <text x="34" y="227" font-size="11.5" fill="#1f2328" font-weight="700">中断</text>
+  <text x="34" y="247" font-size="11" fill="#57606a">SIGTERM → SIGKILL</text>
+  <text x="34" y="264" font-size="11" fill="#57606a">（5s grace）</text>
+  <text x="34" y="289" font-size="11.5" fill="#1f2328" font-weight="700">特点</text>
+  <text x="34" y="309" font-size="11" fill="#57606a">prompt 走 stdin；系统提示</text>
+  <text x="34" y="324" font-size="11" fill="#57606a">走临时文件</text>
+
+  <!-- codex -->
+  <rect x="250" y="58" width="220" height="270" rx="10" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+  <rect x="250" y="58" width="220" height="40" rx="10" fill="#eaf1ff"/>
+  <text x="360" y="83" text-anchor="middle" font-size="14" font-weight="700" fill="#1e40af">codex</text>
+  <text x="264" y="118" font-size="11.5" fill="#1f2328" font-weight="700">协议：stdout JSONL</text>
+  <text x="264" y="140" font-size="11" fill="#57606a">thread.started / item.*</text>
+  <text x="264" y="157" font-size="11" fill="#57606a">/ turn.completed</text>
+  <text x="264" y="182" font-size="11.5" fill="#1f2328" font-weight="700">会话保持</text>
+  <text x="264" y="202" font-size="11" fill="#57606a">exec resume &lt;threadId&gt;</text>
+  <text x="264" y="227" font-size="11.5" fill="#1f2328" font-weight="700">中断</text>
+  <text x="264" y="247" font-size="11" fill="#57606a">SIGTERM → SIGKILL</text>
+  <text x="264" y="264" font-size="11" fill="#57606a">（5s grace）</text>
+  <text x="264" y="289" font-size="11.5" fill="#1f2328" font-weight="700">特点</text>
+  <text x="264" y="309" font-size="11" fill="#57606a">agent_message 缓存机制</text>
+  <text x="264" y="324" font-size="11" fill="#57606a">拼 final_text</text>
+
+  <!-- pi -->
+  <rect x="490" y="58" width="220" height="270" rx="10" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+  <rect x="490" y="58" width="220" height="40" rx="10" fill="#f3f0ff"/>
+  <text x="600" y="83" text-anchor="middle" font-size="14" font-weight="700" fill="#5b21b6">pi（pi-coding-agent）</text>
+  <text x="504" y="118" font-size="11.5" fill="#1f2328" font-weight="700">协议：stdin/stdout JSONL RPC</text>
+  <text x="504" y="140" font-size="11" fill="#57606a">命令 prompt/abort/new_session</text>
+  <text x="504" y="157" font-size="11" fill="#57606a">/get_state；事件 message_update</text>
+  <text x="504" y="174" font-size="11" fill="#57606a">/tool_execution_*/agent_settled</text>
+  <text x="504" y="199" font-size="11.5" fill="#1f2328" font-weight="700">生命周期：每 scope 一个进程</text>
+  <text x="504" y="224" font-size="11.5" fill="#1f2328" font-weight="700">中断</text>
+  <text x="504" y="244" font-size="11" fill="#57606a">abort 命令（优雅，不杀进程）</text>
+  <text x="504" y="269" font-size="11.5" fill="#1f2328" font-weight="700">特点</text>
+  <text x="504" y="289" font-size="11" fill="#57606a">图片 base64 内嵌 prompt；</text>
+  <text x="504" y="306" font-size="11" fill="#57606a">pi 原生人机接口</text>
+
+  <!-- opencode -->
+  <rect x="720" y="58" width="220" height="270" rx="10" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+  <rect x="720" y="58" width="220" height="40" rx="10" fill="#f3f0ff"/>
+  <text x="830" y="83" text-anchor="middle" font-size="14" font-weight="700" fill="#5b21b6">opencode</text>
+  <text x="734" y="118" font-size="11.5" fill="#1f2328" font-weight="700">协议：HTTP REST + SSE 总线</text>
+  <text x="734" y="140" font-size="11" fill="#57606a">POST /session、prompt_async、</text>
+  <text x="734" y="157" font-size="11" fill="#57606a">abort；GET /event（SSE）</text>
+  <text x="734" y="174" font-size="11" fill="#57606a">GET /global/health 探测</text>
+  <text x="734" y="199" font-size="11.5" fill="#1f2328" font-weight="700">生命周期：每 profile 一个 server</text>
+  <text x="734" y="219" font-size="11" fill="#57606a">单进程多 session（一等公民）</text>
+  <text x="734" y="244" font-size="11.5" fill="#1f2328" font-weight="700">中断：abort API</text>
+  <text x="734" y="269" font-size="11.5" fill="#1f2328" font-weight="700">特点</text>
+  <text x="734" y="289" font-size="11" fill="#57606a">会话磁盘持久化，bridge 重启后</text>
+  <text x="734" y="306" font-size="11" fill="#57606a">凭 sessionID 续聊；SSE 断线</text>
+  <text x="734" y="322" font-size="11" fill="#57606a">指数退避重连</text>
+</svg>
+<div class="cap">图 2 · 四种 agent 适配器速查对比</div>
+</div>
+
+<table>
+  <tr><th>维度</th><th>claude</th><th>codex</th><th>pi</th><th>opencode</th></tr>
+  <tr><td>进程模型</td><td>spawn-per-message</td><td>spawn-per-message</td><td>常驻 RPC（每 scope）</td><td>常驻 HTTP server（每 profile）</td></tr>
+  <tr><td>启动命令</td><td><code>claude -p --output-format stream-json --verbose --permission-mode &lt;mode&gt; --append-system-prompt-file &lt;tmp&gt;</code></td><td><code>codex exec --json --sandbox &lt;mode&gt; -c approval_policy="never" --skip-git-repo-check -C &lt;cwd&gt; [resume &lt;threadId&gt;] -</code></td><td><code>pi --mode rpc --append-system-prompt &lt;prompt&gt; [--session-id &lt;id&gt;]</code></td><td><code>opencode serve --port &lt;port&gt; --hostname 127.0.0.1</code></td></tr>
+  <tr><td>输入通道</td><td>stdin（prompt）</td><td>stdin（<code>-</code>）</td><td>stdin JSONL 命令</td><td>REST（prompt_async）</td></tr>
+  <tr><td>输出通道</td><td>stdout 逐行 stream-json</td><td>stdout JSONL</td><td>stdout 事件流</td><td>SSE 事件流（按工作目录划分）</td></tr>
+  <tr><td>turn 结束信号</td><td><code>result</code> 消息</td><td><code>turn.completed</code></td><td><code>agent_settled</code></td><td><code>session.idle</code> / <code>session.error</code></td></tr>
+  <tr><td>中断方式</td><td>SIGTERM → 5s → SIGKILL</td><td>SIGTERM → 5s → SIGKILL</td><td><code>abort</code> 命令</td><td><code>POST /session/{id}/abort</code></td></tr>
+  <tr><td>会话保持</td><td><code>--resume &lt;sessionId&gt;</code></td><td><code>resume &lt;threadId&gt;</code></td><td>进程内会话 + <code>--session-id</code></td><td>磁盘持久化，sessionID 续聊</td></tr>
+</table>
+
+<h3>3.2 claude 协议时序（spawn-per-message）</h3>
+<div class="fig">
+<svg viewBox="0 0 960 480" width="900" role="img" aria-label="claude 时序图">
+  <defs>
+    <marker id="ar3" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="ar3g" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#16a34a"/>
+    </marker>
+  </defs>
+  <!-- lifelines -->
+  <g font-size="12.5" font-weight="700">
+    <rect x="80" y="20" width="150" height="34" rx="7" fill="#fef2f2" stroke="#dc2626"/><text x="155" y="42" text-anchor="middle" fill="#991b1b">Bridge</text>
+    <rect x="330" y="20" width="170" height="34" rx="7" fill="#eaf1ff" stroke="#2563eb"/><text x="415" y="42" text-anchor="middle" fill="#1e40af">ClaudeAdapter</text>
+    <rect x="620" y="20" width="220" height="34" rx="7" fill="#f6f8fa" stroke="#57606a"/><text x="730" y="42" text-anchor="middle" fill="#1f2328">claude CLI 子进程</text>
+  </g>
+  <line x1="155" y1="54" x2="155" y2="455" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="415" y1="54" x2="415" y2="455" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="730" y1="54" x2="730" y2="455" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+  <!-- steps -->
+  <line x1="155" y1="86" x2="413" y2="86" stroke="#2563eb" stroke-width="1.6" marker-end="url(#ar3)"/>
+  <text x="284" y="78" text-anchor="middle" font-size="11.5" fill="#1f2328">Run(ctx, prompt, opts)</text>
+
+  <line x1="415" y1="122" x2="728" y2="122" stroke="#2563eb" stroke-width="1.6" marker-end="url(#ar3)"/>
+  <text x="571" y="114" text-anchor="middle" font-size="11.5" fill="#1f2328">spawn: claude -p --output-format stream-json [--resume sid]</text>
+
+  <line x1="415" y1="158" x2="728" y2="158" stroke="#2563eb" stroke-width="1.6" marker-end="url(#ar3)"/>
+  <text x="571" y="150" text-anchor="middle" font-size="11.5" fill="#1f2328">stdin ← prompt（随后关闭 stdin）</text>
+
+  <line x1="730" y1="196" x2="417" y2="196" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar3g)"/>
+  <text x="573" y="188" text-anchor="middle" font-size="11.5" fill="#15803d">stdout 行：system.init → Event{system, sessionId}</text>
+
+  <line x1="730" y1="240" x2="417" y2="240" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar3g)"/>
+  <text x="573" y="224" text-anchor="middle" font-size="11.5" fill="#15803d">assistant 行 ×N</text>
+  <text x="573" y="256" text-anchor="middle" font-size="10.5" fill="#57606a">text / thinking / tool_use → 对应 Event</text>
+
+  <line x1="730" y1="292" x2="417" y2="292" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar3g)"/>
+  <text x="573" y="284" text-anchor="middle" font-size="11.5" fill="#15803d">user 行：tool_result → Event{tool_result}</text>
+
+  <line x1="415" y1="330" x2="157" y2="330" stroke="#16a34a" stroke-width="1.6" stroke-dasharray="6 3" marker-end="url(#ar3g)"/>
+  <text x="286" y="322" text-anchor="middle" font-size="11.5" fill="#15803d">统一 Event 流（边读边发）</text>
+
+  <line x1="730" y1="368" x2="417" y2="368" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar3g)"/>
+  <text x="573" y="360" text-anchor="middle" font-size="11.5" fill="#15803d">result 行 → Event{done}（含 usage）</text>
+
+  <rect x="340" y="392" width="150" height="30" rx="6" fill="#fff7ed" stroke="#ea580c"/>
+  <text x="415" y="411" text-anchor="middle" font-size="11" fill="#9a3412">进程退出，channel 关闭</text>
+
+  <text x="80" y="440" font-size="11" fill="#57606a">会话保持：从 system.init 记录 sessionId，下一条消息以 --resume &lt;sessionId&gt; 续跑；中断 = SIGTERM → 5s grace → SIGKILL。</text>
+</svg>
+<div class="cap">图 3 · claude 适配器时序</div>
+</div>
+
+<h3>3.3 codex 协议时序（spawn-per-message）</h3>
+<div class="fig">
+<svg viewBox="0 0 960 470" width="900" role="img" aria-label="codex 时序图">
+  <defs>
+    <marker id="ar4" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="ar4g" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#16a34a"/>
+    </marker>
+  </defs>
+  <g font-size="12.5" font-weight="700">
+    <rect x="80" y="20" width="150" height="34" rx="7" fill="#fef2f2" stroke="#dc2626"/><text x="155" y="42" text-anchor="middle" fill="#991b1b">Bridge</text>
+    <rect x="330" y="20" width="170" height="34" rx="7" fill="#eaf1ff" stroke="#2563eb"/><text x="415" y="42" text-anchor="middle" fill="#1e40af">CodexAdapter</text>
+    <rect x="620" y="20" width="220" height="34" rx="7" fill="#f6f8fa" stroke="#57606a"/><text x="730" y="42" text-anchor="middle" fill="#1f2328">codex CLI 子进程</text>
+  </g>
+  <line x1="155" y1="54" x2="155" y2="445" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="415" y1="54" x2="415" y2="445" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="730" y1="54" x2="730" y2="445" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+  <line x1="155" y1="86" x2="413" y2="86" stroke="#2563eb" stroke-width="1.6" marker-end="url(#ar4)"/>
+  <text x="284" y="78" text-anchor="middle" font-size="11.5" fill="#1f2328">Run(ctx, prompt, opts)</text>
+
+  <line x1="415" y1="122" x2="728" y2="122" stroke="#2563eb" stroke-width="1.6" marker-end="url(#ar4)"/>
+  <text x="571" y="114" text-anchor="middle" font-size="11.5" fill="#1f2328">spawn: codex exec --json … [resume &lt;threadId&gt;] -</text>
+
+  <line x1="730" y1="160" x2="417" y2="160" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar4g)"/>
+  <text x="573" y="152" text-anchor="middle" font-size="11.5" fill="#15803d">thread.started → 记录 threadId（会话保持）</text>
+
+  <line x1="730" y1="206" x2="417" y2="206" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar4g)"/>
+  <text x="573" y="190" text-anchor="middle" font-size="11.5" fill="#15803d">item.started / item.completed ×N</text>
+  <text x="573" y="222" text-anchor="middle" font-size="10.5" fill="#57606a">command_execution → tool_use / tool_result</text>
+
+  <rect x="300" y="240" width="230" height="46" rx="6" fill="#fff7ed" stroke="#ea580c"/>
+  <text x="415" y="258" text-anchor="middle" font-size="11" fill="#9a3412">pendingAgentMessage 机制</text>
+  <text x="415" y="276" text-anchor="middle" font-size="10" fill="#c2410c">agent_message 先缓存；下一条到来时前一条发 text</text>
+
+  <line x1="415" y1="316" x2="157" y2="316" stroke="#16a34a" stroke-width="1.6" stroke-dasharray="6 3" marker-end="url(#ar4g)"/>
+  <text x="286" y="308" text-anchor="middle" font-size="11.5" fill="#15803d">统一 Event 流</text>
+
+  <line x1="730" y1="354" x2="417" y2="354" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar4g)"/>
+  <text x="573" y="346" text-anchor="middle" font-size="11.5" fill="#15803d">turn.completed → 最后一条缓存作为 final_text → Event{done}</text>
+
+  <rect x="340" y="380" width="150" height="30" rx="6" fill="#fff7ed" stroke="#ea580c"/>
+  <text x="415" y="399" text-anchor="middle" font-size="11" fill="#9a3412">进程退出，channel 关闭</text>
+
+  <text x="80" y="438" font-size="11" fill="#57606a">配置：--sandbox &lt;mode&gt; -c approval_policy="never" --skip-git-repo-check -C &lt;cwd&gt;；中断 = SIGTERM → 5s grace → SIGKILL。</text>
+</svg>
+<div class="cap">图 4 · codex 适配器时序</div>
+</div>
+
+<h3>3.4 pi 协议时序（常驻 RPC 进程，每 scope 一个）</h3>
+<div class="fig">
+<svg viewBox="0 0 960 560" width="900" role="img" aria-label="pi 时序图">
+  <defs>
+    <marker id="ar5" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#7c3aed"/>
+    </marker>
+    <marker id="ar5g" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#16a34a"/>
+    </marker>
+    <marker id="ar5r" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#dc2626"/>
+    </marker>
+  </defs>
+  <g font-size="12.5" font-weight="700">
+    <rect x="70" y="20" width="150" height="34" rx="7" fill="#fef2f2" stroke="#dc2626"/><text x="145" y="42" text-anchor="middle" fill="#991b1b">Bridge</text>
+    <rect x="330" y="20" width="170" height="34" rx="7" fill="#f3f0ff" stroke="#7c3aed"/><text x="415" y="42" text-anchor="middle" fill="#5b21b6">PiAdapter / piSession</text>
+    <rect x="640" y="20" width="230" height="34" rx="7" fill="#f6f8fa" stroke="#57606a"/><text x="755" y="42" text-anchor="middle" fill="#1f2328">pi --mode rpc（常驻）</text>
+  </g>
+  <line x1="145" y1="54" x2="145" y2="535" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="415" y1="54" x2="415" y2="535" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="755" y1="54" x2="755" y2="535" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+  <rect x="640" y="66" width="230" height="26" rx="6" fill="#eef2f7"/>
+  <text x="755" y="83" text-anchor="middle" font-size="10.5" fill="#57606a">首次使用才启动；此后复用</text>
+
+  <line x1="145" y1="116" x2="413" y2="116" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#ar5)"/>
+  <text x="279" y="108" text-anchor="middle" font-size="11.5" fill="#1f2328">Run(prompt, images…)</text>
+
+  <line x1="415" y1="152" x2="753" y2="152" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#ar5)"/>
+  <text x="584" y="144" text-anchor="middle" font-size="11.5" fill="#1f2328">stdin JSONL：{type:"prompt", …}（图片 base64 内嵌）</text>
+
+  <line x1="755" y1="192" x2="417" y2="192" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar5g)"/>
+  <text x="586" y="176" text-anchor="middle" font-size="11.5" fill="#15803d">message_update ×N</text>
+  <text x="586" y="208" text-anchor="middle" font-size="10.5" fill="#57606a">text_delta → text 增量 · thinking_delta → thinking</text>
+
+  <line x1="755" y1="244" x2="417" y2="244" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar5g)"/>
+  <text x="586" y="236" text-anchor="middle" font-size="11.5" fill="#15803d">tool_execution_start / end → tool_use / tool_result</text>
+
+  <line x1="415" y1="284" x2="753" y2="284" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#ar5)"/>
+  <text x="584" y="276" text-anchor="middle" font-size="11.5" fill="#1f2328">{type:"get_state", id:N}（拿 sessionId 供持久化）</text>
+
+  <line x1="755" y1="320" x2="417" y2="320" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar5g)"/>
+  <text x="586" y="312" text-anchor="middle" font-size="11.5" fill="#15803d">response{id:N}（send 按 id 关联，15s 超时）</text>
+
+  <line x1="755" y1="360" x2="417" y2="360" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar5g)"/>
+  <text x="586" y="352" text-anchor="middle" font-size="11.5" fill="#15803d">agent_settled → turn 结束 → Event{done}，关闭本次 run channel</text>
+
+  <line x1="415" y1="398" x2="147" y2="398" stroke="#16a34a" stroke-width="1.6" stroke-dasharray="6 3" marker-end="url(#ar5g)"/>
+  <text x="281" y="390" text-anchor="middle" font-size="11.5" fill="#15803d">统一 Event 流（runChans 按 run 扇出）</text>
+
+  <!-- abort 分支 -->
+  <line x1="145" y1="446" x2="413" y2="446" stroke="#dc2626" stroke-width="1.6" marker-end="url(#ar5r)"/>
+  <text x="279" y="438" text-anchor="middle" font-size="11.5" fill="#991b1b">/stop 或卡片 ⏹ → run.Stop()</text>
+  <line x1="415" y1="482" x2="753" y2="482" stroke="#dc2626" stroke-width="1.6" marker-end="url(#ar5r)"/>
+  <text x="584" y="474" text-anchor="middle" font-size="11.5" fill="#991b1b">{type:"abort"}（优雅中断，进程存活）</text>
+
+  <text x="70" y="530" font-size="11" fill="#57606a">/new → SessionResetter：发 new_session 命令重置会话，无需重启进程；这是 pi 的原生人机接口（machine interface）。</text>
+</svg>
+<div class="cap">图 5 · pi 适配器时序：常驻 RPC + 命令/事件双工</div>
+</div>
+
+<h3>3.5 opencode 协议时序（常驻 HTTP server + SSE 总线，每 profile 一个）</h3>
+<div class="fig">
+<svg viewBox="0 0 960 620" width="900" role="img" aria-label="opencode 时序图">
+  <defs>
+    <marker id="ar6" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#7c3aed"/>
+    </marker>
+    <marker id="ar6g" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#16a34a"/>
+    </marker>
+    <marker id="ar6r" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#dc2626"/>
+    </marker>
+  </defs>
+  <g font-size="12.5" font-weight="700">
+    <rect x="60" y="20" width="150" height="34" rx="7" fill="#fef2f2" stroke="#dc2626"/><text x="135" y="42" text-anchor="middle" fill="#991b1b">Bridge</text>
+    <rect x="320" y="20" width="190" height="34" rx="7" fill="#f3f0ff" stroke="#7c3aed"/><text x="415" y="42" text-anchor="middle" fill="#5b21b6">OpenCodeAdapter / ocServer</text>
+    <rect x="640" y="20" width="240" height="34" rx="7" fill="#f6f8fa" stroke="#57606a"/><text x="760" y="42" text-anchor="middle" fill="#1f2328">opencode serve（127.0.0.1）</text>
+  </g>
+  <line x1="135" y1="54" x2="135" y2="595" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="415" y1="54" x2="415" y2="595" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="760" y1="54" x2="760" y2="595" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+  <line x1="415" y1="90" x2="758" y2="90" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#ar6)"/>
+  <text x="586" y="82" text-anchor="middle" font-size="11.5" fill="#1f2328">ensureServer：freePort 启动 + GET /global/health 轮询（15s）</text>
+
+  <line x1="415" y1="128" x2="758" y2="128" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#ar6)"/>
+  <text x="586" y="120" text-anchor="middle" font-size="11.5" fill="#1f2328">GET /event?directory=&lt;cwd&gt;（SSE 按工作目录订阅，常驻，断线 1s→15s 指数退避重连）</text>
+
+  <line x1="760" y1="164" x2="417" y2="164" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar6g)"/>
+  <text x="588" y="156" text-anchor="middle" font-size="11.5" fill="#15803d">server.connected</text>
+
+  <line x1="135" y1="204" x2="413" y2="204" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#ar6)"/>
+  <text x="274" y="196" text-anchor="middle" font-size="11.5" fill="#1f2328">Run(scope, prompt)</text>
+
+  <line x1="415" y1="242" x2="758" y2="242" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#ar6)"/>
+  <text x="586" y="234" text-anchor="middle" font-size="11.5" fill="#1f2328">sessionFor(scope)：复用持久化 sessionID，否则 POST /session?directory=&lt;工作目录&gt;</text>
+
+  <line x1="415" y1="282" x2="758" y2="282" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#ar6)"/>
+  <text x="586" y="274" text-anchor="middle" font-size="11.5" fill="#1f2328">POST /session/{id}/prompt_async（异步，立即返回）</text>
+
+  <line x1="760" y1="324" x2="417" y2="324" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar6g)"/>
+  <text x="588" y="308" text-anchor="middle" font-size="11.5" fill="#15803d">SSE: message.part.delta ×N（文本增量）</text>
+  <text x="588" y="340" text-anchor="middle" font-size="10.5" fill="#57606a">按 sessionID 分发到对应 run；partKinds 区分 text / reasoning</text>
+
+  <line x1="760" y1="378" x2="417" y2="378" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar6g)"/>
+  <text x="588" y="362" text-anchor="middle" font-size="11.5" fill="#15803d">SSE: message.part.updated ×N</text>
+  <text x="588" y="394" text-anchor="middle" font-size="10.5" fill="#57606a">工具全生命周期 pending → running → completed</text>
+
+  <line x1="760" y1="432" x2="417" y2="432" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar6g)"/>
+  <text x="588" y="424" text-anchor="middle" font-size="11.5" fill="#15803d">SSE: session.idle → turn 结束 → Event{done}</text>
+
+  <line x1="415" y1="470" x2="137" y2="470" stroke="#16a34a" stroke-width="1.6" stroke-dasharray="6 3" marker-end="url(#ar6g)"/>
+  <text x="276" y="462" text-anchor="middle" font-size="11.5" fill="#15803d">统一 Event 流（registerRun/closeRun 扇出）</text>
+
+  <line x1="135" y1="516" x2="413" y2="516" stroke="#dc2626" stroke-width="1.6" marker-end="url(#ar6r)"/>
+  <text x="274" y="508" text-anchor="middle" font-size="11.5" fill="#991b1b">/stop → run.Stop()</text>
+  <line x1="415" y1="550" x2="758" y2="550" stroke="#dc2626" stroke-width="1.6" marker-end="url(#ar6r)"/>
+  <text x="586" y="542" text-anchor="middle" font-size="11.5" fill="#991b1b">POST /session/{id}/abort → 随后 SSE session.error(MessageAbortedError) 收尾</text>
+
+  <text x="60" y="592" font-size="11" fill="#57606a">会话由 opencode 磁盘持久化：bridge 重启后凭 sessionID 直接续聊，无需重放历史。</text>
+</svg>
+<div class="cap">图 6 · opencode 适配器时序：REST 控制面 + SSE 数据面</div>
+</div>
+
+<h2 id="s4"><span class="no">4</span>设计决策：为什么不用 ACP</h2>
+<p><a href="https://agentclientprotocol.com">ACP（Agent Client Protocol）</a>是 JSON-RPC over stdio 的 agent 客户端协议。项目初期评估过统一走 ACP 的方案，结论是<b>不采用</b>，各 agent 用其原生机-machine 接口：</p>
+
+<div class="fig">
+<svg viewBox="0 0 960 400" width="900" role="img" aria-label="ACP 决策对比图">
+  <defs>
+    <marker id="ar7" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <!-- 左：ACP 方案 -->
+  <rect x="20" y="20" width="440" height="330" rx="12" fill="#ffffff" stroke="#dc2626" stroke-width="1.5"/>
+  <rect x="20" y="20" width="440" height="44" rx="12" fill="#fef2f2"/>
+  <text x="240" y="48" text-anchor="middle" font-size="14" font-weight="700" fill="#991b1b">方案 A：统一走 ACP（未采用）</text>
+  <g font-size="12" fill="#1f2328">
+    <text x="40" y="92" font-weight="700">支持度盘点：</text>
+    <text x="40" y="116">· opencode：原生支持 ✅</text>
+    <text x="40" y="138">· claude / codex：靠 Zed 维护的 adapter ⚠️</text>
+    <text x="40" y="160">· pi：只有社区 adapter，存在 MUST 级缺口 ❌</text>
+    <text x="40" y="196" font-weight="700">风险：</text>
+    <text x="40" y="220">· 三类适配层质量不一，调试链路变长</text>
+    <text x="40" y="242">· 协议表达能力受最小公分母限制</text>
+    <text x="40" y="264">· pi 无原生 ACP，硬上等于放弃其原生 RPC</text>
+    <text x="40" y="286" font-weight="700">opencode 侧：</text>
+    <text x="40" y="310">serve 模式多 session 是一等公民、有健康检查、</text>
+    <text x="40" y="330">事件粒度更细 —— ACP 均无对应能力</text>
+  </g>
+
+  <!-- 右：原生协议 -->
+  <rect x="500" y="20" width="440" height="330" rx="12" fill="#ffffff" stroke="#16a34a" stroke-width="1.5"/>
+  <rect x="500" y="20" width="440" height="44" rx="12" fill="#ecfdf5"/>
+  <text x="720" y="48" text-anchor="middle" font-size="14" font-weight="700" fill="#15803d">方案 B：各用原生机-machine 接口（已采用）</text>
+  <g font-size="12" fill="#1f2328">
+    <text x="520" y="92" font-weight="700">选型结果：</text>
+    <text x="520" y="116">· opencode → serve（REST + SSE），非 ACP</text>
+    <text x="520" y="138">· pi → 原生 RPC（--mode rpc）</text>
+    <text x="520" y="160">· claude / codex → 原生 stream-json / JSONL</text>
+    <text x="520" y="196" font-weight="700">收益：</text>
+    <text x="520" y="220">· 每个 agent 用官方一手接口，能力全集</text>
+    <text x="520" y="242">· 统一抽象下沉到 Adapter / Event 层</text>
+    <text x="520" y="264">· 适配器内部语义与 ACP 对齐（超集）</text>
+    <text x="520" y="300" font-weight="700">保留的迁移路径：</text>
+    <text x="520" y="322">internal/agent/acp.go 保留最小 ACP client，</text>
+    <text x="520" y="340">供未来 claude / codex 迁 ACP 时直接启用</text>
+  </g>
+
+  <line x1="462" y1="185" x2="498" y2="185" stroke="#57606a" stroke-width="1.6" marker-end="url(#ar7)"/>
+</svg>
+<div class="cap">图 7 · ACP 决策对比：统一协议 vs 原生协议</div>
+</div>
+
+<p>保留的 <code>internal/agent/acp.go</code> 最小 ACP client 覆盖：<code>initialize</code> / <code>session/new</code> / <code>session/prompt</code> / <code>session/cancel</code> + <code>session/update</code> 事件翻译 + <code>request_permission</code> 自动放行。由于适配器内部抽象本身与 ACP 语义对齐（且为其超集），未来若要迁移 claude / codex 到 ACP，只需替换适配器实现，上层不动。</p>
+
+<h2 id="s5"><span class="no">5</span>流式卡片机制</h2>
+<p>agent 事件到飞书客户端「打字机效果」的完整链路：<b>事件 → Reduce（不可变状态机）→ Render（CardKit 2.0 JSON）→ 400ms 节流 + 串行更新队列 → cardkit API → 客户端渲染</b>。</p>
+
+<div class="fig">
+<svg viewBox="0 0 960 560" width="900" role="img" aria-label="流式卡片时序图">
+  <defs>
+    <marker id="ar8" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="ar8t" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#0d9488"/>
+    </marker>
+    <marker id="ar8o" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#ea580c"/>
+    </marker>
+  </defs>
+  <g font-size="12" font-weight="700">
+    <rect x="10" y="20" width="120" height="34" rx="7" fill="#f6f8fa" stroke="#57606a"/><text x="70" y="42" text-anchor="middle" fill="#1f2328">Agent 事件</text>
+    <rect x="170" y="20" width="130" height="34" rx="7" fill="#f0fdfa" stroke="#0d9488"/><text x="235" y="42" text-anchor="middle" fill="#0f766e">Reduce 状态机</text>
+    <rect x="340" y="20" width="120" height="34" rx="7" fill="#f0fdfa" stroke="#0d9488"/><text x="400" y="42" text-anchor="middle" fill="#0f766e">Render</text>
+    <rect x="500" y="20" width="130" height="34" rx="7" fill="#fff7ed" stroke="#ea580c"/><text x="565" y="42" text-anchor="middle" fill="#9a3412">Stream 节流队列</text>
+    <rect x="670" y="20" width="130" height="34" rx="7" fill="#eaf1ff" stroke="#2563eb"/><text x="735" y="42" text-anchor="middle" fill="#1e40af">CardKit API</text>
+    <rect x="830" y="20" width="120" height="34" rx="7" fill="#eaf1ff" stroke="#2563eb"/><text x="890" y="42" text-anchor="middle" fill="#1e40af">飞书客户端</text>
+  </g>
+  <line x1="70" y1="54" x2="70" y2="540" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="235" y1="54" x2="235" y2="540" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="400" y1="54" x2="400" y2="540" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="565" y1="54" x2="565" y2="540" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="735" y1="54" x2="735" y2="540" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="890" y1="54" x2="890" y2="540" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+  <!-- 启动阶段 -->
+  <line x1="565" y1="88" x2="733" y2="88" stroke="#2563eb" stroke-width="1.6" marker-end="url(#ar8)"/>
+  <text x="649" y="80" text-anchor="middle" font-size="11.5" fill="#1f2328">card.create（流式模式）</text>
+  <line x1="565" y1="120" x2="733" y2="120" stroke="#2563eb" stroke-width="1.6" marker-end="url(#ar8)"/>
+  <text x="649" y="112" text-anchor="middle" font-size="11.5" fill="#1f2328">按 card_id 发消息到会话</text>
+  <line x1="735" y1="152" x2="888" y2="152" stroke="#2563eb" stroke-width="1.6" marker-end="url(#ar8)"/>
+  <text x="811" y="144" text-anchor="middle" font-size="11.5" fill="#1e40af">卡片落屏</text>
+
+  <!-- 增量循环 -->
+  <line x1="70" y1="196" x2="233" y2="196" stroke="#0d9488" stroke-width="1.6" marker-end="url(#ar8t)"/>
+  <text x="151" y="188" text-anchor="middle" font-size="11.5" fill="#0f766e">Event ×N</text>
+  <line x1="235" y1="228" x2="398" y2="228" stroke="#0d9488" stroke-width="1.6" marker-end="url(#ar8t)"/>
+  <text x="316" y="220" text-anchor="middle" font-size="11.5" fill="#0f766e">新状态 → 卡片 JSON</text>
+  <line x1="400" y1="260" x2="563" y2="260" stroke="#ea580c" stroke-width="1.6" marker-end="url(#ar8o)"/>
+  <text x="481" y="252" text-anchor="middle" font-size="11.5" fill="#9a3412">Update(card)</text>
+
+  <rect x="500" y="278" width="130" height="58" rx="8" fill="#fff7ed" stroke="#ea580c"/>
+  <text x="565" y="298" text-anchor="middle" font-size="10.5" fill="#9a3412">400ms 节流合并</text>
+  <text x="565" y="314" text-anchor="middle" font-size="10.5" fill="#9a3412">串行队列，只推最新帧</text>
+
+  <line x1="565" y1="366" x2="733" y2="366" stroke="#2563eb" stroke-width="1.6" marker-end="url(#ar8)"/>
+  <text x="649" y="350" text-anchor="middle" font-size="11.5" fill="#1f2328">card.update 全卡更新</text>
+  <text x="649" y="382" text-anchor="middle" font-size="10" fill="#57606a">sequence 严格递增 · uuid=u_&lt;cardId&gt;_&lt;seq&gt; 幂等</text>
+
+  <line x1="735" y1="416" x2="888" y2="416" stroke="#2563eb" stroke-width="1.6" marker-end="url(#ar8)"/>
+  <text x="811" y="408" text-anchor="middle" font-size="11.5" fill="#1e40af">打字机增量呈现</text>
+
+  <!-- 结束 -->
+  <line x1="70" y1="460" x2="233" y2="460" stroke="#0d9488" stroke-width="1.6" marker-end="url(#ar8t)"/>
+  <text x="151" y="452" text-anchor="middle" font-size="11.5" fill="#0f766e">Event{done}</text>
+  <line x1="565" y1="496" x2="733" y2="496" stroke="#2563eb" stroke-width="1.6" marker-end="url(#ar8)"/>
+  <text x="649" y="488" text-anchor="middle" font-size="11.5" fill="#1f2328">最后一次 card.update + card.settings 关闭流式</text>
+  <line x1="735" y1="528" x2="888" y2="528" stroke="#2563eb" stroke-width="1.6" marker-end="url(#ar8)"/>
+  <text x="811" y="520" text-anchor="middle" font-size="11.5" fill="#1e40af">终态定格</text>
+</svg>
+<div class="cap">图 8 · 流式卡片链路时序：事件 → 状态机 → 渲染 → 节流 → CardKit → 打字机</div>
+</div>
+
+<h3>5.1 关键设计点</h3>
+<ul>
+  <li><b>节流与串行</b>：400ms 节流 + 串行更新队列，高频事件合并成帧，只推最新一帧，避免打爆 CardKit 限流。</li>
+  <li><b>顺序与幂等</b>：<code>sequence</code> 严格递增；每次更新的 <code>uuid = u_&lt;cardId&gt;_&lt;seq&gt;</code>，网络重试不产生重复更新。</li>
+  <li><b>卡片元素</b>：
+    <ul>
+      <li>思考内容 → 折叠面板（thinking）；</li>
+      <li>正文 → markdown 文本块；</li>
+      <li>工具调用 → 折叠面板，<b>≥3 个时折叠历史、只保留最新一个展开</b>；</li>
+      <li>运行中 footer 显示状态 + <b>⏹ 终止按钮</b>（callback <code>cmd=stop</code>）；</li>
+      <li>终态标注：中断 / 超时 / 错误。</li>
+    </ul>
+  </li>
+  <li><b>邮箱脱敏</b>：渲染时对文本做邮箱脱敏（<code>MaskEmails</code>）——飞书租户审计会拒绝含原始邮箱地址的卡片。</li>
+  <li><b>收尾</b>：<code>card.settings</code> 关闭流式模式，卡片定格为终态。</li>
+</ul>
+
+<h2 id="s6"><span class="no">6</span>健壮性设计：三层防护</h2>
+<p>桥接器是长驻进程，面对的故障分三类：WS 断线、半死连接（TCP 活着但事件流停了）、agent 单轮运行卡死。对应三层独立防护：</p>
+
+<div class="fig">
+<svg viewBox="0 0 960 420" width="900" role="img" aria-label="三层健壮性图">
+  <defs>
+    <marker id="ar9" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <!-- 层 1 -->
+  <rect x="20" y="20" width="920" height="110" rx="12" fill="#eaf1ff" stroke="#2563eb" stroke-width="1.5"/>
+  <rect x="20" y="20" width="160" height="110" rx="12" fill="#2563eb"/>
+  <text x="100" y="66" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">第 1 层</text>
+  <text x="100" y="92" text-anchor="middle" font-size="12" fill="#dbeafe">SDK 层</text>
+  <text x="200" y="52" font-size="13" font-weight="700" fill="#1e40af">oapi-sdk-go ws.Client 自带断线重连</text>
+  <text x="200" y="76" font-size="12" fill="#3b5bdb">网络抖动、临时断线由 SDK 自动重连；</text>
+  <text x="200" y="96" font-size="12" fill="#3b5bdb">OnReconnecting / OnReconnected 回调把状态同步给 supervisor 与日志。</text>
+  <text x="200" y="120" font-size="11" fill="#57606a">覆盖故障：TCP 断开、网关重启等「显性」断线。</text>
+
+  <!-- 层 2 -->
+  <rect x="20" y="150" width="920" height="130" rx="12" fill="#ecfdf5" stroke="#16a34a" stroke-width="1.5"/>
+  <rect x="20" y="150" width="160" height="130" rx="12" fill="#16a34a"/>
+  <text x="100" y="206" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">第 2 层</text>
+  <text x="100" y="232" text-anchor="middle" font-size="12" fill="#dcfce7">supervisor 层</text>
+  <text x="200" y="180" font-size="13" font-weight="700" fill="#15803d">半死连接检测 + 强制重建</text>
+  <text x="200" y="204" font-size="12" fill="#166534">每 60s 用 REST 探测（GET /open-apis/bot/v3/info，10s 超时）；连续失败 3 次 → 判定半死连接；</text>
+  <text x="200" y="224" font-size="12" fill="#166534">client.Close() 强制关闭后重新握手（握手 15s 超时）。</text>
+  <text x="200" y="248" font-size="12" fill="#166534">状态机：connecting / connected / reconnecting / down；Status 记录 State、LastEventAt、Restarts 等。</text>
+  <text x="200" y="270" font-size="11" fill="#57606a">覆盖故障：连接「看起来活着」但事件流已中断 —— SDK 重连感知不到的场景。</text>
+
+  <!-- 层 3 -->
+  <rect x="20" y="300" width="920" height="104" rx="12" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5"/>
+  <rect x="20" y="300" width="160" height="104" rx="12" fill="#ea580c"/>
+  <text x="100" y="346" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">第 3 层</text>
+  <text x="100" y="372" text-anchor="middle" font-size="12" fill="#ffedd5">run 层</text>
+  <text x="200" y="330" font-size="13" font-weight="700" fill="#9a3412">idle 看门狗 + 原生中断</text>
+  <text x="200" y="354" font-size="12" fill="#c2410c">agent 10 分钟无任何事件（preferences.idleTimeoutMinutes 可配，0=默认 10，负值关闭）</text>
+  <text x="200" y="374" font-size="12" fill="#c2410c">→ run.Stop() + 卡片标注「⏱ 长时间无响应，已自动终止」。</text>
+  <text x="200" y="396" font-size="11" fill="#57606a">/stop 与卡片 ⏹ 按钮走各 agent 原生中断：pi abort · opencode abort API · claude/codex SIGTERM→5s→SIGKILL。</text>
+</svg>
+<div class="cap">图 9 · 三层健壮性：SDK 重连 / supervisor 半死检测 / run 级看门狗</div>
+</div>
+
+<h3>6.1 WS 监督状态机</h3>
+<div class="fig">
+<svg viewBox="0 0 960 430" width="900" role="img" aria-label="WS 监督状态机图">
+  <defs>
+    <marker id="ar10" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#57606a"/>
+    </marker>
+    <marker id="ar10g" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#16a34a"/>
+    </marker>
+    <marker id="ar10r" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#dc2626"/>
+    </marker>
+    <marker id="ar10o" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#ea580c"/>
+    </marker>
+  </defs>
+
+  <!-- states -->
+  <rect x="60" y="170" width="180" height="70" rx="12" fill="#eef2f7" stroke="#57606a" stroke-width="1.5"/>
+  <text x="150" y="200" text-anchor="middle" font-size="14" font-weight="700" fill="#1f2328">connecting</text>
+  <text x="150" y="222" text-anchor="middle" font-size="10.5" fill="#57606a">WS 握手（15s 超时）</text>
+
+  <rect x="390" y="170" width="180" height="70" rx="12" fill="#ecfdf5" stroke="#16a34a" stroke-width="2"/>
+  <text x="480" y="200" text-anchor="middle" font-size="14" font-weight="700" fill="#15803d">connected</text>
+  <text x="480" y="222" text-anchor="middle" font-size="10.5" fill="#16a34a">事件流正常 · 60s 探测循环</text>
+
+  <rect x="710" y="60" width="190" height="70" rx="12" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5"/>
+  <text x="805" y="90" text-anchor="middle" font-size="14" font-weight="700" fill="#9a3412">reconnecting</text>
+  <text x="805" y="112" text-anchor="middle" font-size="10.5" fill="#c2410c">SDK 自动重连中</text>
+
+  <rect x="710" y="300" width="190" height="70" rx="12" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="805" y="330" text-anchor="middle" font-size="14" font-weight="700" fill="#991b1b">down</text>
+  <text x="805" y="352" text-anchor="middle" font-size="10.5" fill="#b91c1c">判定半死 → 强制重建</text>
+
+  <!-- transitions -->
+  <line x1="240" y1="205" x2="388" y2="205" stroke="#16a34a" stroke-width="1.8" marker-end="url(#ar10g)"/>
+  <text x="314" y="194" text-anchor="middle" font-size="11" fill="#15803d">握手成功</text>
+
+  <path d="M 570 190 C 640 160, 660 110, 708 100" fill="none" stroke="#ea580c" stroke-width="1.8" marker-end="url(#ar10o)"/>
+  <text x="640" y="130" text-anchor="middle" font-size="11" fill="#c2410c">OnReconnecting（SDK 层断线）</text>
+
+  <path d="M 710 115 C 640 130, 620 170, 572 190" fill="none" stroke="#16a34a" stroke-width="1.8" marker-end="url(#ar10g)"/>
+  <text x="628" y="162" text-anchor="middle" font-size="11" fill="#15803d">OnReconnected</text>
+
+  <path d="M 570 225 C 650 240, 680 290, 718 315" fill="none" stroke="#dc2626" stroke-width="1.8" marker-end="url(#ar10r)"/>
+  <text x="668" y="272" text-anchor="middle" font-size="11" fill="#991b1b">REST 探测连续失败 ×3</text>
+
+  <path d="M 710 345 C 500 400, 240 380, 158 242" fill="none" stroke="#57606a" stroke-width="1.8" marker-end="url(#ar10)"/>
+  <text x="420" y="392" text-anchor="middle" font-size="11" fill="#57606a">client.Close() → 重新握手（Restarts +1）</text>
+
+  <path d="M 150 240 C 150 300, 240 320, 330 300" fill="none" stroke="#dc2626" stroke-width="1.5" marker-end="url(#ar10r)"/>
+  <text x="240" y="330" text-anchor="middle" font-size="11" fill="#991b1b">握手 15s 超时 → 重试</text>
+
+  <!-- 注解 -->
+  <rect x="60" y="370" width="510" height="46" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="76" y="390" font-size="11" fill="#57606a">connected 期间每个到达事件调用 MarkEvent() 刷新 LastEventAt；</text>
+  <text x="76" y="407" font-size="11" fill="#57606a">Status{State, LastEventAt, Restarts…} 供 /status 命令与日志观测。</text>
+</svg>
+<div class="cap">图 10 · supervisor 状态机与转换条件</div>
+</div>
+
+<h2 id="s7"><span class="no">7</span>Dashboard 与进程注册表</h2>
+<p>多个 bridge 实例（不同 profile）可能同时跑在一台机器上。每个进程启动时向注册表登记自己，dashboard 子命令读取注册表汇总成表格。</p>
+
+<div class="fig">
+<svg viewBox="0 0 960 460" width="900" role="img" aria-label="Dashboard 数据流图">
+  <defs>
+    <marker id="ar11" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#57606a"/>
+    </marker>
+    <marker id="ar11r" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#dc2626"/>
+    </marker>
+  </defs>
+
+  <!-- bridge 实例 -->
+  <rect x="20" y="30" width="270" height="86" rx="10" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="155" y="55" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1e40af">bridge 进程 A（profile: dev）</text>
+  <text x="155" y="75" text-anchor="middle" font-size="11" fill="#57606a">pid · agent · binary 路径 · workspace</text>
+  <text x="155" y="92" text-anchor="middle" font-size="11" fill="#57606a">version · startedAt · heartbeatAt</text>
+
+  <rect x="20" y="140" width="270" height="86" rx="10" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="155" y="165" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1e40af">bridge 进程 B（profile: prod）</text>
+  <text x="155" y="185" text-anchor="middle" font-size="11" fill="#57606a">…同构条目</text>
+  <text x="155" y="202" text-anchor="middle" font-size="11" fill="#57606a">退出时注销自己</text>
+
+  <rect x="20" y="250" width="270" height="60" rx="10" fill="#f6f8fa" stroke="#94a3b8" stroke-dasharray="5 3" stroke-width="1.2"/>
+  <text x="155" y="275" text-anchor="middle" font-size="12" fill="#64748b">bridge 进程 C（已死）</text>
+  <text x="155" y="293" text-anchor="middle" font-size="11" fill="#94a3b8">残留僵尸条目</text>
+
+  <!-- 注册表文件 -->
+  <rect x="370" y="110" width="260" height="130" rx="10" fill="#fdf4ff" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="500" y="136" text-anchor="middle" font-size="12.5" font-weight="700" fill="#7e22ce">registry/processes.json</text>
+  <text x="500" y="158" text-anchor="middle" font-size="11" fill="#9333ea">~/.lark-coding-agent-bridge/registry/</text>
+  <text x="500" y="180" text-anchor="middle" font-size="11" fill="#9333ea">upsert 写入 · 15s 心跳刷新 heartbeatAt</text>
+  <text x="500" y="200" text-anchor="middle" font-size="11" fill="#9333ea">version = debug.ReadBuildInfo()</text>
+  <text x="500" y="220" text-anchor="middle" font-size="10.5" fill="#9333ea">vcs.revision / time / modified + GoVersion</text>
+
+  <!-- dashboard -->
+  <rect x="710" y="60" width="230" height="230" rx="10" fill="#ffffff" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="825" y="86" text-anchor="middle" font-size="13" font-weight="700" fill="#15803d">dashboard 子命令</text>
+  <text x="725" y="114" font-size="11.5" fill="#1f2328">1. 读取注册表全部条目</text>
+  <text x="725" y="138" font-size="11.5" fill="#1f2328">2. 按 PID 活性探测（signal 0）</text>
+  <text x="725" y="158" font-size="11" fill="#57606a">清理僵尸条目</text>
+  <text x="725" y="184" font-size="11.5" fill="#1f2328">3. 与当前二进制 version 比对</text>
+  <text x="725" y="204" font-size="11" fill="#57606a">不一致的行标 ⚠︎</text>
+  <text x="725" y="230" font-size="11.5" fill="#1f2328">4. 表格展示：pid / profile /</text>
+  <text x="725" y="250" font-size="11.5" fill="#1f2328">agent / workspace / version /</text>
+  <text x="725" y="270" font-size="11.5" fill="#1f2328">启动时间 / 心跳</text>
+
+  <!-- 连线 -->
+  <line x1="290" y1="73" x2="420" y2="108" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar11)"/>
+  <line x1="290" y1="183" x2="430" y2="172" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar11)"/>
+  <line x1="290" y1="280" x2="420" y2="236" stroke="#94a3b8" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#ar11)"/>
+  <text x="316" y="90" font-size="10.5" fill="#57606a">注册/心跳</text>
+
+  <line x1="630" y1="175" x2="708" y2="175" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar11)"/>
+  <text x="669" y="164" text-anchor="middle" font-size="10.5" fill="#15803d">读取</text>
+
+  <path d="M 825 290 C 825 350, 300 380, 168 312" fill="none" stroke="#dc2626" stroke-width="1.4" stroke-dasharray="6 3" marker-end="url(#ar11r)"/>
+  <text x="500" y="380" text-anchor="middle" font-size="11" fill="#991b1b">signal 0 探测失败 → 判定僵尸 → 从注册表清除</text>
+
+  <!-- version 说明 -->
+  <rect x="20" y="340" width="630" height="100" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="36" y="364" font-size="12" font-weight="700" fill="#1f2328">版本来源：debug.ReadBuildInfo()</text>
+  <text x="36" y="386" font-size="11.5" fill="#57606a">version{Version, Commit, CommitTime, Dirty, GoVersion} —— Commit/CommitTime/Dirty 取自 vcs.revision / vcs.time / vcs.modified。</text>
+  <text x="36" y="406" font-size="11.5" fill="#57606a">可区分「正版发布版」与「开发分支 dirty 构建」；dashboard 据此标出与当前二进制不一致的实例（⚠︎）。</text>
+  <text x="36" y="428" font-size="11.5" fill="#57606a">升级替换二进制后，未重启的旧实例会被醒目标出，提示需要重启。</text>
+</svg>
+<div class="cap">图 11 · 进程注册表与 dashboard 数据流</div>
+</div>
+
+<h2 id="s8"><span class="no">8</span>自升级（upgrade）</h2>
+<p><code>upgrade</code> 子命令从源码仓库原地构建并原子替换当前二进制：</p>
+
+<div class="fig">
+<svg viewBox="0 0 960 620" width="900" role="img" aria-label="upgrade 流程图">
+  <defs>
+    <marker id="ar12" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#57606a"/>
+    </marker>
+  </defs>
+
+  <rect x="330" y="14" width="300" height="44" rx="22" fill="#eaf1ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="480" y="42" text-anchor="middle" font-size="13" font-weight="700" fill="#1e40af">upgrade [--check] [--source &lt;path&gt;]</text>
+
+  <rect x="330" y="86" width="300" height="52" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1.3"/>
+  <text x="480" y="106" text-anchor="middle" font-size="12" fill="#1f2328">定位源码仓库</text>
+  <text x="480" y="124" text-anchor="middle" font-size="10.5" fill="#57606a">--source → ~/lark-coding-agent-bridge-go → cwd repo root</text>
+
+  <rect x="330" y="164" width="300" height="40" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1.3"/>
+  <text x="480" y="189" text-anchor="middle" font-size="12" fill="#1f2328">git fetch</text>
+
+  <rect x="330" y="230" width="300" height="52" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1.3"/>
+  <text x="480" y="250" text-anchor="middle" font-size="12" fill="#1f2328">比较三方 commit</text>
+  <text x="480" y="268" text-anchor="middle" font-size="10.5" fill="#57606a">本地 HEAD · 远端 @{u} · 当前二进制的 version.Commit</text>
+
+  <!-- 判断：--check -->
+  <polygon points="480,306 600,346 480,386 360,346" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5"/>
+  <text x="480" y="342" text-anchor="middle" font-size="12" font-weight="700" fill="#9a3412">--check 模式？</text>
+  <text x="480" y="360" text-anchor="middle" font-size="10" fill="#c2410c">或已是最新？</text>
+
+  <rect x="680" y="318" width="240" height="56" rx="8" fill="#f6f8fa" stroke="#94a3b8" stroke-width="1.3"/>
+  <text x="800" y="340" text-anchor="middle" font-size="12" fill="#1f2328">只报告状态后退出</text>
+  <text x="800" y="358" text-anchor="middle" font-size="10.5" fill="#57606a">是否有更新 / 各 commit 差异</text>
+
+  <rect x="300" y="412" width="360" height="44" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1.3"/>
+  <text x="480" y="431" text-anchor="middle" font-size="12" fill="#1f2328">git pull --ff-only</text>
+  <text x="480" y="448" text-anchor="middle" font-size="10.5" fill="#57606a">fast-forward only：有未提交改动/分叉时直接失败，保护现场</text>
+
+  <rect x="300" y="482" width="360" height="40" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1.3"/>
+  <text x="480" y="507" text-anchor="middle" font-size="12" fill="#1f2328">go build 输出到临时文件（同目录）</text>
+
+  <rect x="300" y="548" width="360" height="40" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1.3"/>
+  <text x="480" y="566" text-anchor="middle" font-size="12" fill="#1f2328">新二进制自检：执行 version 子命令</text>
+  <text x="480" y="582" text-anchor="middle" font-size="10.5" fill="#57606a">确认可运行且 commit 符合预期</text>
+
+  <!-- 底部 -->
+  <rect x="40" y="620" width="0" height="0" fill="none"/>
+  <polygon points="0,0 0,0 0,0" fill="none"/>
+
+  <!-- arrows -->
+  <line x1="480" y1="58" x2="480" y2="84" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar12)"/>
+  <line x1="480" y1="138" x2="480" y2="162" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar12)"/>
+  <line x1="480" y1="204" x2="480" y2="228" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar12)"/>
+  <line x1="480" y1="282" x2="480" y2="304" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar12)"/>
+  <line x1="600" y1="346" x2="678" y2="346" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar12)"/>
+  <text x="639" y="336" text-anchor="middle" font-size="10.5" fill="#57606a">是</text>
+  <line x1="480" y1="386" x2="480" y2="410" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar12)"/>
+  <text x="494" y="402" font-size="10.5" fill="#57606a">否</text>
+  <line x1="480" y1="456" x2="480" y2="480" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar12)"/>
+  <line x1="480" y1="522" x2="480" y2="546" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar12)"/>
+</svg>
+<svg viewBox="0 0 960 150" width="900" role="img" aria-label="upgrade 流程图（收尾段）">
+  <defs>
+    <marker id="ar13" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <line x1="480" y1="4" x2="480" y2="26" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar13)"/>
+  <rect x="300" y="30" width="360" height="44" rx="8" fill="#ecfdf5" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="480" y="49" text-anchor="middle" font-size="12" font-weight="700" fill="#15803d">os.Rename 原子替换二进制</text>
+  <text x="480" y="66" text-anchor="middle" font-size="10.5" fill="#166534">同分区 rename，读者不会看到半截文件</text>
+  <line x1="480" y1="74" x2="480" y2="96" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar13)"/>
+  <rect x="300" y="100" width="360" height="40" rx="20" fill="#f3f0ff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="480" y="125" text-anchor="middle" font-size="12" font-weight="700" fill="#5b21b6">提示：重启运行中的实例后生效</text>
+</svg>
+<div class="cap">图 12 · upgrade 流程：fetch → 比对 → ff-only pull → 构建 → 自检 → 原子替换</div>
+</div>
+
+<div class="note"><b>设计要点：</b>构建产物先落在与目标二进制<b>同目录</b>的临时文件，保证 <code>os.Rename</code> 是同分区原子操作；替换前用新二进制自跑 <code>version</code> 做冒烟自检，避免把坏构建换上去；<code>--ff-only</code> 保证本地有改动时宁可失败也不搞出 merge。</div>
+
+<h2 id="s9"><span class="no">9</span>数据目录布局</h2>
+<pre><code>~/.lark-coding-agent-bridge/
+├── config.json                    # 全局配置（多 profile）
+├── registry/
+│   └── processes.json             # 进程注册表（dashboard 数据源）
+├── profiles/
+│   └── &lt;name&gt;/                   # 每个 profile 一份
+│       ├── sessions.json          # scope → agent 会话 ID 映射
+│       ├── workspaces.json        # scope → 工作目录映射
+│       ├── media/                 # 下载的消息附件
+│       └── lark-cli/              # 该 profile 的 lark 侧凭据/缓存
+└── workspaces/
+    └── &lt;name&gt;/
+        └── default/               # 默认工作目录</code></pre>
+
+<footer>
+  lark-coding-agent-bridge-go · 技术设计文档 · 配套实现文档见 <code>implementation.html</code>
+</footer>
+
+</div>
+</body>
+</html>

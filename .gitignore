@@ -1,0 +1,18 @@
+# 构建产物
+bin/
+dist/
+*.test
+*.out
+coverage.txt
+
+# Go 工作区/缓存（本地）
+go.work
+go.work.sum
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+# 系统
+.DS_Store

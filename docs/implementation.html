@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>lark-coding-agent-bridge-go · 实现层文档</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --card:#ffffff; --ink:#1f2328; --ink2:#57606a; --line:#d0d7de;
+    --blue:#2563eb; --green:#16a34a; --orange:#ea580c; --purple:#7c3aed; --red:#dc2626; --teal:#0d9488;
+    --code-bg:#f0f3f6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",sans-serif;
+    line-height:1.7;font-size:15px}
+  .wrap{max-width:1000px;margin:0 auto;padding:40px 28px 80px}
+  header.doc{border-bottom:1px solid var(--line);padding-bottom:24px;margin-bottom:28px}
+  header.doc h1{font-size:28px;margin:0 0 8px}
+  header.doc .sub{color:var(--ink2);font-size:14px}
+  .badge{display:inline-block;background:#eaf1ff;color:var(--blue);border:1px solid #c7dbff;
+    border-radius:12px;padding:1px 10px;font-size:12px;margin-right:6px;vertical-align:2px}
+  nav.toc{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 22px;margin-bottom:32px}
+  nav.toc h2{margin:0 0 8px;font-size:15px;color:var(--ink2)}
+  nav.toc ol{margin:0;padding-left:22px}
+  nav.toc a{color:var(--blue);text-decoration:none}
+  nav.toc a:hover{text-decoration:underline}
+  h2{font-size:22px;margin:44px 0 14px;padding-top:10px;border-top:2px solid var(--line)}
+  h2 .no{color:var(--blue);margin-right:8px}
+  h3{font-size:17px;margin:26px 0 10px}
+  h3 .file{color:var(--ink2);font-weight:400;font-size:13px}
+  p{margin:10px 0}
+  ul,ol{margin:8px 0;padding-left:24px}
+  li{margin:4px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+    background:var(--code-bg);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+  pre{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:14px 18px;overflow-x:auto;font-size:13px;line-height:1.6}
+  pre code{background:none;border:none;padding:0;color:inherit}
+  table{border-collapse:collapse;width:100%;margin:14px 0;background:var(--card);font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 12px;text-align:left;vertical-align:top}
+  th{background:#eef2f7}
+  .fig{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin:18px 0;overflow-x:auto}
+  .fig .cap{text-align:center;color:var(--ink2);font-size:13px;margin-top:10px}
+  .fig svg{display:block;margin:0 auto;max-width:100%;height:auto}
+  .note{background:#fff8e6;border:1px solid #f0d080;border-radius:10px;padding:12px 16px;margin:14px 0;font-size:14px}
+  footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);color:var(--ink2);font-size:13px;text-align:center}
+  svg text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="doc">
+  <h1>lark-coding-agent-bridge-go <span class="badge">实现层文档</span></h1>
+  <div class="sub">关键结构与方法（签名级）· 按包组织 · 配套设计文档见 <code>design.html</code></div>
+</header>
+
+<nav class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#s1">包结构与依赖</a></li>
+    <li><a href="#s2">internal/agent —— 适配层核心</a></li>
+    <li><a href="#s3">internal/agent —— 四个适配器实现</a></li>
+    <li><a href="#s4">internal/bridge —— 消息中枢</a></li>
+    <li><a href="#s5">internal/card —— 流式卡片</a></li>
+    <li><a href="#s6">internal/supervisor / registry / upgrade / lark</a></li>
+  </ol>
+</nav>
+
+<h2 id="s1"><span class="no">1</span>包结构与依赖</h2>
+<div class="fig">
+<svg viewBox="0 0 960 470" width="900" role="img" aria-label="包依赖图">
+  <defs>
+    <marker id="im1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <!-- top: cmd -->
+  <rect x="330" y="16" width="300" height="46" rx="8" fill="#f3f0ff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="480" y="36" text-anchor="middle" font-size="12.5" font-weight="700" fill="#5b21b6">cmd/lark-coding-agent-bridge</text>
+  <text x="480" y="52" text-anchor="middle" font-size="10.5" fill="#6d28d9">main.go · run / dashboard / upgrade / version</text>
+
+  <!-- row 2 -->
+  <rect x="60" y="100" width="200" height="52" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.3"/>
+  <text x="160" y="121" text-anchor="middle" font-size="12" font-weight="700" fill="#9a3412">internal/onboard</text>
+  <text x="160" y="139" text-anchor="middle" font-size="10.5" fill="#c2410c">register.go 扫码注册</text>
+
+  <rect x="280" y="100" width="200" height="52" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.3"/>
+  <text x="380" y="121" text-anchor="middle" font-size="12" font-weight="700" fill="#9a3412">internal/config · state</text>
+  <text x="380" y="139" text-anchor="middle" font-size="10.5" fill="#c2410c">配置 / 会话 / 工作区存储</text>
+
+  <rect x="500" y="100" width="200" height="52" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.3"/>
+  <text x="600" y="121" text-anchor="middle" font-size="12" font-weight="700" fill="#9a3412">internal/upgrade</text>
+  <text x="600" y="139" text-anchor="middle" font-size="10.5" fill="#c2410c">upgrade.go 自升级</text>
+
+  <rect x="720" y="100" width="200" height="52" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.3"/>
+  <text x="820" y="121" text-anchor="middle" font-size="12" font-weight="700" fill="#9a3412">internal/registry</text>
+  <text x="820" y="139" text-anchor="middle" font-size="10.5" fill="#c2410c">registry.go 进程注册表</text>
+
+  <!-- row 3: lark + supervisor -->
+  <rect x="140" y="190" width="300" height="56" rx="8" fill="#eaf1ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="290" y="212" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1e40af">internal/lark</text>
+  <text x="290" y="231" text-anchor="middle" font-size="10.5" fill="#3b5bdb">client.go · oapi-sdk-go v3 封装</text>
+
+  <rect x="520" y="190" width="300" height="56" rx="8" fill="#ecfdf5" stroke="#16a34a" stroke-width="1.3"/>
+  <text x="670" y="212" text-anchor="middle" font-size="12.5" font-weight="700" fill="#15803d">internal/supervisor</text>
+  <text x="670" y="231" text-anchor="middle" font-size="10.5" fill="#166534">supervisor.go · WS 监督</text>
+
+  <!-- row 4: bridge -->
+  <rect x="200" y="284" width="560" height="56" rx="8" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="480" y="306" text-anchor="middle" font-size="12.5" font-weight="700" fill="#991b1b">internal/bridge</text>
+  <text x="480" y="325" text-anchor="middle" font-size="10.5" fill="#b91c1c">bridge.go · queue.go · message.go · prompt.go · commands.go</text>
+
+  <!-- row 5: card + agent -->
+  <rect x="120" y="378" width="330" height="56" rx="8" fill="#f0fdfa" stroke="#0d9488" stroke-width="1.3"/>
+  <text x="285" y="400" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0f766e">internal/card</text>
+  <text x="285" y="419" text-anchor="middle" font-size="10.5" fill="#0d9488">state.go · render.go · stream.go</text>
+
+  <rect x="510" y="378" width="330" height="56" rx="8" fill="#f6f8fa" stroke="#57606a" stroke-width="1.5"/>
+  <text x="675" y="400" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1f2328">internal/agent</text>
+  <text x="675" y="419" text-anchor="middle" font-size="10.5" fill="#57606a">types · run · claude · codex · pi · opencode · acp</text>
+
+  <!-- edges -->
+  <line x1="480" y1="62" x2="380" y2="98" stroke="#57606a" stroke-width="1.3" marker-end="url(#im1)"/>
+  <line x1="600" y1="62" x2="600" y2="98" stroke="#57606a" stroke-width="1.3" marker-end="url(#im1)"/>
+  <line x1="820" y1="62" x2="820" y2="98" stroke="#57606a" stroke-width="1.3" marker-end="url(#im1)"/>
+  <line x1="160" y1="62" x2="160" y2="98" stroke="#57606a" stroke-width="1.3" marker-end="url(#im1)"/>
+  <line x1="380" y1="152" x2="310" y2="188" stroke="#57606a" stroke-width="1.3" marker-end="url(#im1)"/>
+  <line x1="600" y1="152" x2="660" y2="188" stroke="#57606a" stroke-width="1.3" marker-end="url(#im1)"/>
+  <line x1="290" y1="246" x2="380" y2="282" stroke="#57606a" stroke-width="1.3" marker-end="url(#im1)"/>
+  <line x1="670" y1="246" x2="580" y2="282" stroke="#57606a" stroke-width="1.3" marker-end="url(#im1)"/>
+  <line x1="380" y1="340" x2="300" y2="376" stroke="#57606a" stroke-width="1.3" marker-end="url(#im1)"/>
+  <line x1="580" y1="340" x2="660" y2="376" stroke="#57606a" stroke-width="1.3" marker-end="url(#im1)"/>
+  <line x1="450" y1="406" x2="508" y2="406" stroke="#0d9488" stroke-width="1.3" marker-end="url(#im1)"/>
+  <text x="480" y="396" text-anchor="middle" font-size="10" fill="#0d9488">消费 Event</text>
+</svg>
+<div class="cap">图 1 · 包依赖：bridge 居中编排，card 消费 agent 的统一事件流，lark/supervisor 提供通道与监督</div>
+</div>
+
+<h2 id="s2"><span class="no">2</span>internal/agent —— 适配层核心</h2>
+
+<h3>2.1 统一抽象 <span class="file">internal/agent/types.go</span></h3>
+<pre><code>type EventType string
+// system | text | thinking | tool_use | tool_result | usage | done | error
+
+type TerminationReason string
+// completed | interrupted | idle_timeout | error ...
+
+type Event struct {
+    Type      EventType         // 事件类型
+    Text      string            // text / thinking / tool_result 载荷
+    Name      string            // tool_use 的工具名
+    SessionID string            // system 事件携带的会话 ID（供持久化）
+    Usage     *Usage            // done 事件携带的 token 统计
+    Reason    TerminationReason // done 的结束原因
+    Err       error             // error 事件
+    // ...
+}
+
+type RunOptions struct {
+    Prompt    string            // 构造好的 prompt（含 bridge_context）
+    Cwd       string            // 工作目录
+    SessionID string            // 非空则续跑（--resume / resume / sessionID）
+    Images    []Image           // 图片附件（pi 走 base64 内嵌）
+    Mode      string            // 权限/沙箱模式（claude permission-mode / codex sandbox）
+    // ...
+}
+
+type Run interface {
+    Events() &lt;-chan Event       // 统一事件流；终态后关闭
+    Stop()                       // 各 agent 的原生中断
+    WaitExit(timeoutMs int) bool // 等待退出/收尾
+}
+
+type BotIdentity struct { /* bot 的 open_id 等，用于 @ 判断 */ }
+
+type Adapter interface {
+    Run(ctx context.Context, opts RunOptions) (Run, error)
+}
+
+type SessionResetter interface {   // 常驻型适配器实现，支持 /new
+    ResetSession(scope string) error
+}
+
+func NewAdapter(kind config.AgentKind) Adapter // 按配置构造四种适配器之一</code></pre>
+<ul>
+  <li><b>设计要点</b>：四种 agent 的协议差异全部收敛在适配器内部；bridge 与 card 只依赖 <code>Event</code>。事件语义与 ACP 对齐（且为超集），为将来迁移留路。</li>
+</ul>
+
+<h3>2.2 子进程运行器 <span class="file">internal/agent/run.go</span>（claude / codex 共用）</h3>
+<pre><code>type procRun struct {
+    cmd    *exec.Cmd
+    events chan Event
+    done   chan struct{}
+    // ...
+}
+
+func startProc(cmd *exec.Cmd, prompt string, stopGraceMs int, env []string,
+    translate func(line []byte) []Event,        // 每行 stdout → 0~N 个 Event
+    terminalErr func(msg string) Event,         // 进程异常退出时的兜底事件
+) (*procRun, error)
+// 启动进程 → stdin 写入 prompt 并关闭 → goroutine 逐行读 stdout 经 translate 发事件
+// → 进程退出后发终态事件并关闭 events channel
+
+func (r *procRun) Stop()                 // SIGTERM → stopGraceMs 宽限 → SIGKILL
+func (r *procRun) WaitExit(timeoutMs int) bool
+func (r *procRun) onCleanup(fn func())   // 注册收尾（如删临时系统提示文件）
+func mergeEnv(overrides map[string]string) []string // 合并进程环境变量</code></pre>
+
+<h2 id="s3"><span class="no">3</span>internal/agent —— 四个适配器实现</h2>
+
+<h3>3.1 ClaudeAdapter <span class="file">internal/agent/claude.go</span></h3>
+<pre><code>func (a *ClaudeAdapter) Run(ctx context.Context, opts RunOptions) (Run, error)
+// 组装 argv: claude -p --output-format stream-json --verbose
+//            --permission-mode &lt;opts.Mode&gt; --append-system-prompt-file &lt;tmp&gt;
+//            [--resume &lt;opts.SessionID&gt;]
+// 系统提示写入临时文件（onCleanup 删除），复用 startProc
+
+func translateClaudeLine(line []byte) []Event
+// system.init            → Event{system, SessionID}
+// assistant(contentBlock)→ text / thinking / tool_use
+// user(tool_result)      → Event{tool_result}
+// result                 → Event{done, Usage}</code></pre>
+
+<h3>3.2 CodexAdapter <span class="file">internal/agent/codex.go</span></h3>
+<pre><code>func (a *CodexAdapter) Run(ctx context.Context, opts RunOptions) (Run, error)
+// argv: codex exec --json --sandbox &lt;mode&gt; -c approval_policy="never"
+//       --skip-git-repo-check -C &lt;cwd&gt; [resume &lt;threadId&gt;] -
+
+type codexTranslator struct { pendingAgentMessage string /* ... */ }
+// thread.started                          → Event{system, SessionID: threadId}
+// item.started/completed(command_execution)→ tool_use / tool_result
+// item.completed(agent_message)           → 先进 pendingAgentMessage 缓存：
+//     下一条 agent_message 到来时，前一条作为 Event{text} 发出；
+//     turn.completed 时，缓存的最后一条作为 final_text 随 Event{done} 发出</code></pre>
+<div class="note"><b>为什么缓存 agent_message：</b>codex 把中间说明和最终答复都发成 agent_message，无法当场区分。延迟一拍——前一条一定是中间文本，最后一条才是 final_text。</div>
+
+<h3>3.3 PiAdapter / piSession <span class="file">internal/agent/pi.go</span>（常驻 RPC，每 scope 一进程）</h3>
+<pre><code>type PiAdapter struct { /* scope → *piSession 映射，并发安全 */ }
+type piSession struct {
+    cmd     *exec.Cmd            // pi --mode rpc --append-system-prompt &lt;p&gt; [--session-id &lt;id&gt;]
+    stdin   io.Writer
+    pending map[int]chan response // id → 响应 channel（send 关联）
+    runChans map[string]chan Event // runId → 事件扇出
+    nextID  int
+    // ...
+}
+
+func (s *piSession) send(cmd any) (response, error)
+// 分配 id → 写一行 JSONL 到 stdin → 等 pending[id]，15s 超时
+
+func (s *piSession) readLoop()
+// 逐行读 stdout：
+//   带 id 的 response → 路由到 pending[id]
+//   事件（message_update.text_delta/thinking_delta、
+//        tool_execution_start/end、agent_settled）→ 翻译成 Event 扇出到 runChans
+//   agent_settled（或错误）→ 发 Event{done} 并关闭该 run 的 channel
+
+func (s *piSession) startRun(opts RunOptions) (Run, error)
+// prompt 命令发出（图片 base64 内嵌）→ get_state 拿 sessionId 供 bridge 持久化
+// 返回 piRun；piRun.Stop() = 发 abort 命令（优雅，不杀进程）
+
+func (a *PiAdapter) ResetSession(scope string) error // /new → new_session 命令</code></pre>
+
+<h3>3.4 OpenCodeAdapter / ocServer <span class="file">internal/agent/opencode.go</span>（常驻 HTTP+SSE，每 profile 一 server）</h3>
+<pre><code>type OpenCodeAdapter struct { server *ocServer /* 每 profile 一个 */ }
+type ocServer struct {
+    port     int
+    sessions map[string]string   // scope → sessionID
+    runs     map[string]chan Event // sessionID → 事件扇出
+    // ...
+}
+
+func (s *ocServer) ensureServer(ctx) error
+// 已健康则复用；否则 freePort() 选端口 →
+// spawn: opencode serve --port &lt;port&gt; --hostname 127.0.0.1 →
+// 轮询 GET /global/health（最长 15s）确认就绪
+
+func (s *ocServer) sessionFor(ctx, scope, cwd string) (sessionID string, err error)
+// 命中缓存/bridge 持久化的 sessionID 直接复用；
+// 否则 POST /session?directory=&lt;cwd&gt; 新建（directory 路由工作目录）
+
+func (s *ocServer) registerRun(sessionID, directory string) *ocRun  // 建立扇出通道，并确保该目录的 SSE 流已启动
+func (s *ocServer) closeRun(sessionID string, run *ocRun)             // 终态后关闭
+
+func (s *ocServer) eventLoop(directory string)
+// GET /event?directory=&lt;dir&gt; SSE 长连（实测：?directory=X 的会话事件
+// 只出现在对应工作区流，不在全局总线）；断线指数退避重连（1s → 15s 上限）；
+// 每个事件按 sessionID 分发到对应 run channel
+
+func translate(ocEvent) []Event
+// partKinds 表区分 text / reasoning delta → Event{text/thinking}
+// message.part.updated：工具状态机 pending → running → completed
+// session.idle → Event{done}；session.error(MessageAbortedError) → 中断收尾
+
+// run 路径：sessionFor → POST /session/{id}/prompt_async?directory=&lt;cwd&gt;（异步）→ 目录级 SSE 回流事件
+// ocRun.Stop() = POST /session/{id}/abort</code></pre>
+<div class="note"><b>选 serve 而非 ACP 的原因（与实现直接相关）：</b>单进程多 session 是一等公民（<code>sessions</code> 映射 + 按工作目录的 SSE 流按 sessionID 扇出）、有 <code>/global/health</code> 做存活探测、事件粒度更细（part 级 delta 与工具全生命周期）。会话由 opencode 磁盘持久化，bridge 重启后凭 sessionID 续聊。</div>
+
+<h3>3.5 acpClient <span class="file">internal/agent/acp.go</span>（保留的迁移路径，当前未接线）</h3>
+<pre><code>type acpClient struct { /* JSON-RPC over stdio */ }
+
+func (c *acpClient) call(method string, params any) (json.RawMessage, error) // 请求-响应
+func (c *acpClient) notify(method string, params any)                         // 单向通知
+func (c *acpClient) readLoop()   // 响应路由 + session/update 事件翻译
+func (c *acpClient) respond(id, result) // 回应 agent 侧请求
+
+// 覆盖协议面：initialize / session/new / session/prompt / session/cancel
+func autoAllowPermission(req) resp  // request_permission 自动放行（优先 allow_always）
+func translateACPUpdate(u) []Event  // session/update → 统一 Event</code></pre>
+
+<h2 id="s4"><span class="no">4</span>internal/bridge —— 消息中枢</h2>
+
+<h3>4.1 Bridge 主体 <span class="file">internal/bridge/bridge.go</span></h3>
+<pre><code>type Bridge struct {
+    lark     *lark.Client
+    adapters map[config.AgentKind]agent.Adapter
+    queues   map[string]*PendingQueue // scope → 防抖队列
+    runs     map[string]agent.Run     // scope → 进行中的 run
+    // 会话/工作区持久化、idle 看门狗定时器等
+}
+
+func (b *Bridge) HandleMessage(ctx context.Context, msg *Message)
+// 1. 过滤自己（bot）发出的消息，防自循环
+// 2. 群聊门槛：必须 @bot 才受理（单聊直通）
+// 3. 斜杠命令分流：/new /cd /ws /stop /status /help → commands.go
+// 4. 普通消息 → NormalizeMessage → 投入该 scope 的 PendingQueue
+
+func (b *Bridge) runBatch(ctx, scope string, msgs []*Message)
+// 防抖窗口收拢的一批消息 → 下载附件（media/）→ buildPrompt →
+// adapter.Run（带持久化的 SessionID / 工作区 Cwd）→
+// 消费 Event 流驱动卡片 Stream → 结束后持久化 SessionID
+
+func (b *Bridge) resetSession(scope string)      // /new：常驻适配器走 SessionResetter，spawn 型直接清 SessionID
+func (b *Bridge) stopRun(scope string)           // /stop：调 Run.Stop()
+func (b *Bridge) stopRunByCardMessage(msgID)     // 卡片 ⏹ 按钮 callback（cmd=stop）按卡片消息定位 run
+
+// idle 看门狗：每个 run 一个 select 循环
+//   case evt := &lt;-run.Events():   刷新计时、驱动卡片
+//   case &lt;-time.After(idleTimeout): run.Stop() + 卡片标注「⏱ 长时间无响应，已自动终止」
+//   超时 = preferences.idleTimeoutMinutes（0=默认 10 分钟，负值关闭）</code></pre>
+
+<h3>4.2 防抖合并队列 <span class="file">internal/bridge/queue.go</span></h3>
+<pre><code>type PendingQueue struct { /* 每 scope 一个；600ms 防抖窗口 */ }
+
+func (q *PendingQueue) Enqueue(m *Message)   // 入队并（重）启动 600ms 计时
+func (q *PendingQueue) Block(reason string)  // 有 run 进行中时阻塞出队（新消息继续累积）
+func (q *PendingQueue) Unblock()             // run 结束后放行
+func (q *PendingQueue) armLocked()           // 计时器到点 → fire（持锁路径）
+func (q *PendingQueue) fire()                // 收拢本批消息 → 触发 runBatch</code></pre>
+<p>效果：用户连发的多条消息在 600ms 内合并为一次 agent 运行；运行期间到达的消息不丢失，排队等下一轮。</p>
+
+<h3>4.3 消息归一化 <span class="file">internal/bridge/message.go</span></h3>
+<pre><code>func NormalizeMessage(raw larkEvent) *Message
+// 支持消息类型：text / post（富文本）/ image / file
+// · post → 拍平为纯文本 + 图片引用
+// · mention 剥离：剔除 @bot 的 mention 占位，还原干净的用户输入
+// · scope 计算：单聊/群聊主会话 → "chat:&lt;chatId&gt;"；
+//               话题回复         → "chat:&lt;chatId&gt;:thread:&lt;threadId&gt;"
+// scope 是会话、工作区、队列、run 的统一隔离键</code></pre>
+
+<h3>4.4 Prompt 构造 <span class="file">internal/bridge/prompt.go</span></h3>
+<pre><code>func buildPrompt(msgs []*Message, ctx PromptContext) string
+// 产出 XML-ish 分区结构：
+//   &lt;bridge_context&gt;  会话元信息：chat 类型、发送者、工作目录、斜杠命令说明  &lt;/bridge_context&gt;
+//   &lt;user_input&gt;      用户消息原文（多条合并时按序排列）                    &lt;/user_input&gt;
+// 防注入：用户文本中的 "&lt;" 一律转义为 "＜"，防止伪造分区闭合标签</code></pre>
+
+<h3>4.5 斜杠命令 <span class="file">internal/bridge/commands.go</span></h3>
+<table>
+  <tr><th>命令</th><th>行为</th></tr>
+  <tr><td><code>/new</code></td><td>重置当前 scope 会话（常驻型走 <code>SessionResetter</code>，spawn 型清 SessionID）</td></tr>
+  <tr><td><code>/cd &lt;path&gt;</code></td><td>切换当前 scope 工作目录（写 workspaces.json）</td></tr>
+  <tr><td><code>/ws</code></td><td>查看当前工作区</td></tr>
+  <tr><td><code>/stop</code></td><td>中断当前 scope 进行中的 run（各 agent 原生中断）</td></tr>
+  <tr><td><code>/status</code></td><td>报告 WS 监督状态、当前 run、会话与工作区</td></tr>
+  <tr><td><code>/help</code></td><td>帮助文本</td></tr>
+</table>
+
+<h2 id="s5"><span class="no">5</span>internal/card —— 流式卡片</h2>
+
+<h3>5.1 运行状态机 <span class="file">internal/card/state.go</span></h3>
+<pre><code>type ToolStatus string // pending | running | completed | error
+type ToolEntry struct { Name, Input, Output string; Status ToolStatus /* ... */ }
+
+type BlockKind string  // thinking | text | tool_group
+type Block struct {
+    Kind     BlockKind
+    Text     string      // thinking / text 内容
+    Tools    []ToolEntry // tool_group 内容
+    Streaming bool       // 是否仍在追加
+}
+
+type FooterStatus string // running | done | interrupted | idle_timeout | error
+type Terminal struct { Reason, Detail string }
+
+type RunState struct {
+    Blocks  []Block
+    Footer  FooterStatus
+    Terminal *Terminal
+    Usage    *agent.Usage
+    // ...
+}
+
+func InitialState() *RunState
+func (s *RunState) Reduce(evt agent.Event) *RunState   // 不可变更新：返回新 state
+//   text/thinking → 追加到当前 streaming 块（或开新块）
+//   tool_use      → 当前 tool_group 追加 ToolEntry（status 机推进）
+//   tool_result   → 回填对应 ToolEntry
+//   done/error    → closeStreamingText 收尾 + Footer/Terminal 落终态
+func (s *RunState) MarkInterrupted() *RunState   // /stop、卡片按钮
+func (s *RunState) MarkIdleTimeout() *RunState   // 看门狗：「⏱ 长时间无响应，已自动终止」
+func (s *RunState) FinalizeIfRunning() *RunState // 兜底：进程非正常消失时定格
+func (s *RunState) TextContent() string          // 提取纯文本（用于终态摘要）</code></pre>
+<p><b>不可变设计</b>：<code>Reduce</code> 每次返回新 <code>RunState</code>，渲染与节流推送读到的永远是一致快照，无数据竞争。</p>
+
+<h3>5.2 渲染 <span class="file">internal/card/render.go</span></h3>
+<pre><code>func Render(state *RunState) map[string]any // RunState → CardKit 2.0 卡片 JSON
+// · thinking 块  → 折叠面板
+// · text 块      → markdown 元素
+// · tool_group   → 折叠面板；groupBlocks 策略：工具调用 ≥3 个时
+//                  折叠历史、只保留最新一个展开
+// · 运行中 footer：状态文本 + ⏹ 终止按钮（callback cmd=stop）
+// · 终态 footer： 中断 / 超时 / 错误标注 + usage
+
+func MaskEmails(s string) string // 邮箱脱敏：飞书租户审计会拒绝含原始邮箱的卡片</code></pre>
+
+<h3>5.3 节流推送 <span class="file">internal/card/stream.go</span></h3>
+<pre><code>type Stream struct {
+    client  *lark.Client
+    cardID  string
+    msgID   string
+    seq     int            // sequence 严格递增
+    latest  map[string]any // 待推送的最新帧
+    pending bool
+    // ...
+}
+
+func NewStream(client *lark.Client, chatID, replyTo string) *Stream
+
+func (s *Stream) Start(ctx context.Context, initial map[string]any) error
+// card.create（流式模式）→ 按 card_id 发消息到会话 → 记录 msgID → 启动 loop goroutine
+
+func (s *Stream) MessageID() string
+
+func (s *Stream) Update(card map[string]any)
+// 只记录最新帧；400ms 节流窗口到点才真正推送（高频事件合并）
+
+func (s *Stream) loop()  // 节流 ticker + 串行发送队列
+func (s *Stream) push()
+// card.update 全卡更新：sequence++，uuid = u_&lt;cardId&gt;_&lt;seq&gt;（幂等）
+
+func (s *Stream) Finish(summary string)
+// 最后一次全卡更新 → card.settings 关闭流式 → 卡片定格
+
+func truncateSummary(text string, max int) string</code></pre>
+
+<h2 id="s6"><span class="no">6</span>internal/supervisor / registry / upgrade / lark</h2>
+
+<h3>6.1 WS 监督 <span class="file">internal/supervisor/supervisor.go</span></h3>
+<pre><code>type State string // connecting | connected | reconnecting | down
+type Status struct {
+    State       State
+    LastEventAt time.Time
+    Restarts    int
+    // ...
+}
+type Config struct { ProbeInterval /* 60s */, ProbeTimeout /* 10s */, HandshakeTimeout /* 15s */ ... }
+
+func New(cfg Config) *Supervisor
+func (s *Supervisor) Run(ctx context.Context)        // 主循环：connectOnce + 探测循环
+func (s *Supervisor) connectOnce(ctx context.Context)
+// 建立 ws.Client（注册 OnReconnecting/OnReconnected 回调）→ 15s 握手超时 →
+// connected 后启动探测：每 60s GET /open-apis/bot/v3/info（10s 超时）；
+// 连续失败 3 次 → setState(down) → client.Close() → 回到 Run 循环重建（Restarts++）
+func (s *Supervisor) MarkEvent()                     // 每个到达事件刷新 LastEventAt
+func (s *Supervisor) Status() Status
+func (s *Supervisor) Stop()
+func (s *Supervisor) setState(state State)</code></pre>
+
+<h3>6.2 进程注册表 <span class="file">internal/registry/registry.go</span></h3>
+<pre><code>type Entry struct {
+    PID         int
+    Profile     string
+    Agent       string
+    Binary      string    // 二进制路径
+    Workspace   string
+    Version     buildinfo.Version // {Version, Commit, CommitTime, Dirty, GoVersion}
+    StartedAt   time.Time
+    HeartbeatAt time.Time
+}
+
+func Register(paths config.Paths, profile, agentKind, workspace string) func()
+// upsert 写入 processes.json → 启动 15s 心跳 goroutine 刷新 HeartbeatAt →
+// 返回注销函数（进程退出时移除条目）
+
+func List(paths config.Paths) ([]Entry, error)
+// 读取全部条目 → Alive() 探测（signal 0）→ 清理僵尸条目后返回
+
+func (e Entry) Alive() bool // kill(pid, 0) 活性探测
+// 内部：registryPath / load / save / upsert（按 PID 覆盖写）</code></pre>
+
+<h3>6.3 自升级 <span class="file">internal/upgrade/upgrade.go</span></h3>
+<pre><code>func Run(ctx context.Context, opts Options) error
+// 1. 定位源码仓库：--source → ~/lark-coding-agent-bridge-go → cwd repo root
+// 2. git fetch → 读本地 HEAD、远端 @{u}、当前二进制 version.Commit
+// 3. --check：只报告差异后返回
+// 4. git pull --ff-only（有未提交改动/分叉则失败，保护现场）
+// 5. go build 到目标同目录临时文件
+// 6. 新二进制 version 自检（冒烟）
+// 7. os.Rename 原子替换 → 提示重启运行中实例</code></pre>
+
+<h3>6.4 Lark 客户端 <span class="file">internal/lark/client.go</span></h3>
+<pre><code>type Client struct { /* oapi-sdk-go v3 lark.Client + cardkit */ }
+
+func (c *Client) SendText(chatID, replyTo, text string) (msgID string, err error)
+func (c *Client) CreateCard(ctx, cardJSON) (cardID string, err error)     // cardkit card.create
+func (c *Client) SendCardByReference(chatID, replyTo, cardID) (msgID, err)// 按 card_id 发消息
+func (c *Client) UpdateCard(cardID string, seq int, cardJSON) error       // card.update，uuid=u_&lt;cardID&gt;_&lt;seq&gt;
+func (c *Client) FinishStreamingCard(cardID string) error                 // card.settings 关闭流式
+func (c *Client) DownloadResource(msgID, fileKey, dest string) error      // 图片/文件附件 → media/
+func (c *Client) GetBotInfo(ctx) (*BotInfo, error)                        // GET bot/v3/info：探测 + 身份
+func (c *Client) tenantAccessToken() (string, error)                      // token 缓存与刷新</code></pre>
+
+<footer>
+  lark-coding-agent-bridge-go · 实现层文档 · 配套设计文档见 <code>design.html</code>
+</footer>
+
+</div>
+</body>
+</html>
