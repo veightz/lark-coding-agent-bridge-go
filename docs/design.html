@@ -91,158 +91,94 @@
 <p>单一二进制 <code>cmd/lark-coding-agent-bridge</code> 提供 <code>run</code> / <code>dashboard</code> / <code>upgrade</code> / <code>version</code> 四个子命令。<code>run</code> 启动桥接主循环：通过 WS 长连接接收飞书事件，消息经归一化、防抖合并后驱动 agent 运行，运行事件流经状态机归约渲染为卡片，再经节流后通过 CardKit API 推回飞书。</p>
 
 <div class="fig">
-<svg viewBox="0 0 960 760" width="900" role="img" aria-label="总体架构图">
-  <defs>
-    <marker id="ar1" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
-      <path d="M0,0 L8,4 L0,8 Z" fill="#57606a"/>
-    </marker>
-    <marker id="ar1b" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
-      <path d="M0,0 L8,4 L0,8 Z" fill="#2563eb"/>
-    </marker>
-  </defs>
-
-  <!-- 飞书云端 -->
-  <rect x="230" y="20" width="500" height="64" rx="10" fill="#eaf1ff" stroke="#2563eb" stroke-width="1.5"/>
-  <text x="480" y="45" text-anchor="middle" font-size="15" font-weight="700" fill="#1e40af">飞书 / Lark OpenAPI 云端</text>
-  <text x="480" y="68" text-anchor="middle" font-size="12" fill="#3b5bdb">WS 事件长连接 · REST API（发消息/附件） · CardKit 流式卡片</text>
-
-  <!-- 主容器 -->
-  <rect x="20" y="120" width="700" height="540" rx="12" fill="#ffffff" stroke="#d0d7de" stroke-width="1.5"/>
-  <text x="40" y="145" font-size="13" font-weight="700" fill="#57606a">bridge 进程（单二进制，多 profile 可多实例并存）</text>
-
-  <!-- CLI 入口 -->
-  <rect x="60" y="158" width="620" height="46" rx="8" fill="#f3f0ff" stroke="#7c3aed" stroke-width="1.2"/>
-  <text x="370" y="177" text-anchor="middle" font-size="13" font-weight="700" fill="#5b21b6">cmd/lark-coding-agent-bridge（CLI 入口）</text>
-  <text x="370" y="195" text-anchor="middle" font-size="11.5" fill="#6d28d9">子命令：run · dashboard · upgrade · version</text>
-
-  <!-- 横向三盒 -->
-  <rect x="60" y="222" width="196" height="52" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.2"/>
-  <text x="158" y="243" text-anchor="middle" font-size="12.5" font-weight="700" fill="#9a3412">internal/onboard</text>
-  <text x="158" y="261" text-anchor="middle" font-size="11" fill="#c2410c">扫码注册向导</text>
-
-  <rect x="272" y="222" width="196" height="52" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.2"/>
-  <text x="370" y="243" text-anchor="middle" font-size="12.5" font-weight="700" fill="#9a3412">config + state</text>
-  <text x="370" y="261" text-anchor="middle" font-size="11" fill="#c2410c">配置 / 会话 / 工作区</text>
-
-  <rect x="484" y="222" width="196" height="52" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.2"/>
-  <text x="582" y="243" text-anchor="middle" font-size="12.5" font-weight="700" fill="#9a3412">internal/upgrade</text>
-  <text x="582" y="261" text-anchor="middle" font-size="11" fill="#c2410c">自升级</text>
-
-  <!-- supervisor + lark -->
-  <rect x="60" y="292" width="300" height="58" rx="8" fill="#ecfdf5" stroke="#16a34a" stroke-width="1.2"/>
-  <text x="210" y="313" text-anchor="middle" font-size="12.5" font-weight="700" fill="#15803d">internal/supervisor</text>
-  <text x="210" y="331" text-anchor="middle" font-size="11" fill="#16a34a">WS 连接监督 · 60s 存活探测 · 强制重建</text>
-
-  <rect x="380" y="292" width="300" height="58" rx="8" fill="#eaf1ff" stroke="#2563eb" stroke-width="1.5"/>
-  <text x="530" y="313" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1e40af">internal/lark（oapi-sdk-go v3 封装）</text>
-  <text x="530" y="331" text-anchor="middle" font-size="11" fill="#3b5bdb">WS 收事件 · REST 发消息 · CardKit · 附件下载</text>
-
-  <!-- bridge 核心 -->
-  <rect x="60" y="368" width="620" height="62" rx="8" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5"/>
-  <text x="370" y="390" text-anchor="middle" font-size="13" font-weight="700" fill="#991b1b">internal/bridge（消息中枢）</text>
-  <text x="370" y="410" text-anchor="middle" font-size="11.5" fill="#b91c1c">消息归一化 → 600ms 防抖合并队列 → 斜杠命令（/new /cd /ws /stop /status /help）· 会话按 scope 隔离</text>
-
-  <!-- card -->
-  <rect x="60" y="448" width="620" height="52" rx="8" fill="#f0fdfa" stroke="#0d9488" stroke-width="1.2"/>
-  <text x="370" y="469" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0f766e">internal/card（流式卡片）</text>
-  <text x="370" y="487" text-anchor="middle" font-size="11" fill="#0d9488">运行状态机 Reduce → CardKit 2.0 渲染 → 400ms 节流串行更新</text>
-
-  <!-- agent adapters -->
-  <g>
-    <rect x="60" y="518" width="145" height="52" rx="8" fill="#f6f8fa" stroke="#57606a" stroke-width="1.2"/>
-    <text x="132" y="539" text-anchor="middle" font-size="12" font-weight="700" fill="#1f2328">claude 适配器</text>
-    <text x="132" y="556" text-anchor="middle" font-size="10.5" fill="#57606a">spawn-per-msg</text>
-
-    <rect x="215" y="518" width="145" height="52" rx="8" fill="#f6f8fa" stroke="#57606a" stroke-width="1.2"/>
-    <text x="287" y="539" text-anchor="middle" font-size="12" font-weight="700" fill="#1f2328">codex 适配器</text>
-    <text x="287" y="556" text-anchor="middle" font-size="10.5" fill="#57606a">spawn-per-msg</text>
-
-    <rect x="370" y="518" width="145" height="52" rx="8" fill="#f6f8fa" stroke="#7c3aed" stroke-width="1.2"/>
-    <text x="442" y="539" text-anchor="middle" font-size="12" font-weight="700" fill="#5b21b6">pi 适配器</text>
-    <text x="442" y="556" text-anchor="middle" font-size="10.5" fill="#6d28d9">常驻 RPC 进程</text>
-
-    <rect x="525" y="518" width="155" height="52" rx="8" fill="#f6f8fa" stroke="#7c3aed" stroke-width="1.2"/>
-    <text x="602" y="539" text-anchor="middle" font-size="12" font-weight="700" fill="#5b21b6">opencode 适配器</text>
-    <text x="602" y="556" text-anchor="middle" font-size="10.5" fill="#6d28d9">常驻 HTTP+SSE</text>
-  </g>
-  <text x="60" y="512" font-size="11.5" font-weight="700" fill="#57606a">internal/agent</text>
-
-  <!-- 本地 CLI -->
-  <g>
-    <rect x="60" y="606" width="145" height="40" rx="8" fill="#fff" stroke="#94a3b8" stroke-dasharray="5 3" stroke-width="1.2"/>
-    <text x="132" y="631" text-anchor="middle" font-size="11.5" fill="#475569" class="mono">claude CLI</text>
-    <rect x="215" y="606" width="145" height="40" rx="8" fill="#fff" stroke="#94a3b8" stroke-dasharray="5 3" stroke-width="1.2"/>
-    <text x="287" y="631" text-anchor="middle" font-size="11.5" fill="#475569" class="mono">codex CLI</text>
-    <rect x="370" y="606" width="145" height="40" rx="8" fill="#fff" stroke="#94a3b8" stroke-dasharray="5 3" stroke-width="1.2"/>
-    <text x="442" y="631" text-anchor="middle" font-size="11.5" fill="#475569" class="mono">pi --mode rpc</text>
-    <rect x="525" y="606" width="155" height="40" rx="8" fill="#fff" stroke="#94a3b8" stroke-dasharray="5 3" stroke-width="1.2"/>
-    <text x="602" y="631" text-anchor="middle" font-size="11.5" fill="#475569" class="mono">opencode serve</text>
-  </g>
-  <text x="60" y="600" font-size="11.5" font-weight="700" fill="#57606a">本机 agent 进程</text>
-
-  <!-- registry / dashboard 侧栏 -->
-  <rect x="750" y="292" width="190" height="110" rx="10" fill="#fff" stroke="#d0d7de" stroke-width="1.5"/>
-  <text x="845" y="315" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1f2328">internal/registry</text>
-  <text x="845" y="335" text-anchor="middle" font-size="11" fill="#57606a">processes.json</text>
-  <text x="845" y="352" text-anchor="middle" font-size="11" fill="#57606a">注册 · 15s 心跳 · 退出注销</text>
-  <text x="845" y="369" text-anchor="middle" font-size="11" fill="#57606a">读取时按 PID 活性清理</text>
-
-  <rect x="750" y="430" width="190" height="70" rx="10" fill="#fff" stroke="#d0d7de" stroke-width="1.5"/>
-  <text x="845" y="453" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1f2328">dashboard 子命令</text>
-  <text x="845" y="472" text-anchor="middle" font-size="11" fill="#57606a">表格展示进程 / 版本</text>
-  <text x="845" y="489" text-anchor="middle" font-size="11" fill="#57606a">不一致行标 ⚠︎</text>
-
-  <!-- 数据目录 -->
-  <rect x="750" y="528" width="190" height="118" rx="10" fill="#fdf4ff" stroke="#a855f7" stroke-width="1.2"/>
-  <text x="845" y="550" text-anchor="middle" font-size="12" font-weight="700" fill="#7e22ce">~/.lark-coding-agent-bridge/</text>
-  <text x="845" y="570" text-anchor="middle" font-size="10.5" fill="#9333ea" class="mono">config.json</text>
-  <text x="845" y="587" text-anchor="middle" font-size="10.5" fill="#9333ea" class="mono">registry/processes.json</text>
-  <text x="845" y="604" text-anchor="middle" font-size="10.5" fill="#9333ea" class="mono">profiles/&lt;name&gt;/…</text>
-  <text x="845" y="621" text-anchor="middle" font-size="10.5" fill="#9333ea" class="mono">workspaces/&lt;name&gt;/…</text>
-
-  <!-- 连线 -->
-  <!-- 云端 <-> lark -->
-  <line x1="560" y1="84" x2="560" y2="290" stroke="#2563eb" stroke-width="1.8" marker-end="url(#ar1b)"/>
-  <line x1="500" y1="290" x2="500" y2="86" stroke="#2563eb" stroke-width="1.8" marker-end="url(#ar1b)"/>
-  <text x="516" y="180" font-size="10.5" fill="#2563eb">REST / CardKit ↑</text>
-  <text x="568" y="180" font-size="10.5" fill="#2563eb">↓ WS 事件流</text>
-
-  <!-- CLI -> bridge -->
-  <line x1="370" y1="204" x2="370" y2="366" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar1)"/>
-  <text x="380" y="218" font-size="10.5" fill="#57606a">run</text>
-
-  <!-- config -> bridge -->
-  <line x1="290" y1="274" x2="300" y2="366" stroke="#ea580c" stroke-width="1.2" marker-end="url(#ar1)"/>
-
-  <!-- supervisor -> lark -->
-  <line x1="360" y1="321" x2="378" y2="321" stroke="#16a34a" stroke-width="1.5" marker-end="url(#ar1)"/>
-
-  <!-- bridge -> card -->
-  <line x1="300" y1="430" x2="300" y2="446" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar1)"/>
-  <!-- card -> lark (绕右侧) -->
-  <path d="M 680 474 L 705 474 L 705 360 L 682 336" fill="none" stroke="#0d9488" stroke-width="1.5" marker-end="url(#ar1)"/>
-  <text x="690" y="420" font-size="10" fill="#0d9488" transform="rotate(90 690 420)"></text>
-  <text x="706" y="420" font-size="10" fill="#0d9488" transform="rotate(-90 712 420)">CardKit 更新</text>
-
-  <!-- bridge -> agent -->
-  <line x1="440" y1="430" x2="440" y2="516" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar1)"/>
-  <!-- agent -> 本地进程 -->
-  <line x1="132" y1="570" x2="132" y2="604" stroke="#94a3b8" stroke-width="1.3" marker-end="url(#ar1)"/>
-  <line x1="287" y1="570" x2="287" y2="604" stroke="#94a3b8" stroke-width="1.3" marker-end="url(#ar1)"/>
-  <line x1="442" y1="570" x2="442" y2="604" stroke="#94a3b8" stroke-width="1.3" marker-end="url(#ar1)"/>
-  <line x1="602" y1="570" x2="602" y2="604" stroke="#94a3b8" stroke-width="1.3" marker-end="url(#ar1)"/>
-  <text x="610" y="590" font-size="10" fill="#64748b">事件流 ↑</text>
-
-  <!-- lark 事件 -> bridge -->
-  <line x1="530" y1="350" x2="530" y2="366" stroke="#2563eb" stroke-width="1.5" marker-end="url(#ar1b)"/>
-
-  <!-- bridge -> registry -->
-  <path d="M 680 399 L 748 360" fill="none" stroke="#57606a" stroke-width="1.3" marker-end="url(#ar1)"/>
-  <text x="700" y="372" font-size="10" fill="#57606a">写入/心跳</text>
-  <!-- registry -> dashboard -->
-  <line x1="845" y1="402" x2="845" y2="428" stroke="#57606a" stroke-width="1.3" marker-end="url(#ar1)"/>
-  <!-- registry -> 数据目录 -->
-  <line x1="845" y1="402" x2="845" y2="526" stroke="#a855f7" stroke-width="1.1" stroke-dasharray="4 3" marker-end="url(#ar1)"/>
+<svg viewBox="0 0 960 700" width="900" role="img" aria-label="总体架构图">
+<defs><marker id="arw-g" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#57606a"/></marker><marker id="arw-b" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#2563eb"/></marker><marker id="arw-t" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#0d9488"/></marker><marker id="arw-r" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#dc2626"/></marker><marker id="arw-p" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#a855f7"/></marker><marker id="arw-gr" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#16a34a"/></marker><marker id="arw-o" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#ea580c"/></marker></defs>
+<rect x="400" y="14" width="530" height="64" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4"/>
+<text x="665.0" y="43.0" text-anchor="middle" font-size="12.5" fill="#2563eb" font-weight="600">飞书 / Lark OpenAPI 云端</text>
+<text x="665.0" y="59.0" text-anchor="middle" font-size="11" fill="#57606a">WS 长连接 · REST API · CardKit 流式卡片</text>
+<rect x="250" y="112" width="690" height="556" rx="14" fill="#fafbfc" stroke="#d0d7de" stroke-width="1.2"/>
+<text x="595" y="132" text-anchor="middle" font-size="11.5" fill="#57606a" style="paint-order:stroke;stroke:#ffffff;stroke-width:3px">bridge 进程（单二进制，多 profile 可多实例并存）</text>
+<rect x="380" y="146" width="420" height="46" rx="10" fill="#faf5ff" stroke="#a855f7" stroke-width="1.4"/>
+<text x="590.0" y="174.0" text-anchor="middle" font-size="12.5" fill="#a855f7" font-weight="600">cmd：run · dashboard · upgrade · version</text>
+<rect x="280" y="222" width="190" height="46" rx="10" fill="#fff7ed" stroke="#ea580c" stroke-width="1.4"/>
+<text x="375.0" y="242.0" text-anchor="middle" font-size="12.5" fill="#ea580c" font-weight="600">internal/onboard</text>
+<text x="375.0" y="258.0" text-anchor="middle" font-size="11" fill="#57606a">扫码注册向导</text>
+<rect x="500" y="222" width="190" height="46" rx="10" fill="#fff7ed" stroke="#ea580c" stroke-width="1.4"/>
+<text x="595.0" y="242.0" text-anchor="middle" font-size="12.5" fill="#ea580c" font-weight="600">config + state</text>
+<text x="595.0" y="258.0" text-anchor="middle" font-size="11" fill="#57606a">配置 / 会话 / 工作区</text>
+<rect x="690" y="222" width="170" height="46" rx="10" fill="#fff7ed" stroke="#ea580c" stroke-width="1.4"/>
+<text x="775.0" y="242.0" text-anchor="middle" font-size="12.5" fill="#ea580c" font-weight="600">internal/upgrade</text>
+<text x="775.0" y="258.0" text-anchor="middle" font-size="11" fill="#57606a">自升级</text>
+<rect x="280" y="298" width="250" height="56" rx="10" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.4"/>
+<text x="405.0" y="323.0" text-anchor="middle" font-size="12.5" fill="#16a34a" font-weight="600">internal/supervisor</text>
+<text x="405.0" y="339.0" text-anchor="middle" font-size="11" fill="#57606a">WS 监督 · 60s 探测 · 强制重建</text>
+<rect x="580" y="298" width="330" height="56" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.4"/>
+<text x="745.0" y="323.0" text-anchor="middle" font-size="12.5" fill="#2563eb" font-weight="600">internal/lark（oapi-sdk-go v3 封装）</text>
+<text x="745.0" y="339.0" text-anchor="middle" font-size="11" fill="#57606a">WS 收事件 · REST 发消息 · CardKit · 附件下载</text>
+<rect x="280" y="384" width="630" height="56" rx="10" fill="#fef2f2" stroke="#dc2626" stroke-width="1.4"/>
+<text x="595.0" y="409.0" text-anchor="middle" font-size="12.5" fill="#dc2626" font-weight="600">internal/bridge（消息中枢）</text>
+<text x="595.0" y="425.0" text-anchor="middle" font-size="11" fill="#57606a">消息归一化 → 600ms 防抖队列 → 斜杠命令 · 会话按 scope 隔离</text>
+<rect x="280" y="470" width="630" height="56" rx="10" fill="#f0fdfa" stroke="#0d9488" stroke-width="1.4"/>
+<text x="595.0" y="495.0" text-anchor="middle" font-size="12.5" fill="#0d9488" font-weight="600">internal/card（流式卡片）</text>
+<text x="595.0" y="511.0" text-anchor="middle" font-size="11" fill="#57606a">运行状态机 Reduce → CardKit 2.0 渲染 → 400ms 节流串行更新</text>
+<rect x="280" y="556" width="135" height="52" rx="10" fill="#f6f8fa" stroke="#57606a" stroke-width="1.4"/>
+<text x="347.5" y="579.0" text-anchor="middle" font-size="12.5" fill="#57606a" font-weight="600">claude 适配器</text>
+<text x="347.5" y="595.0" text-anchor="middle" font-size="11" fill="#57606a">spawn-per-msg</text>
+<rect x="445" y="556" width="135" height="52" rx="10" fill="#f6f8fa" stroke="#57606a" stroke-width="1.4"/>
+<text x="512.5" y="579.0" text-anchor="middle" font-size="12.5" fill="#57606a" font-weight="600">codex 适配器</text>
+<text x="512.5" y="595.0" text-anchor="middle" font-size="11" fill="#57606a">spawn-per-msg</text>
+<rect x="610" y="556" width="135" height="52" rx="10" fill="#f6f8fa" stroke="#57606a" stroke-width="1.4"/>
+<text x="677.5" y="579.0" text-anchor="middle" font-size="12.5" fill="#57606a" font-weight="600">pi 适配器</text>
+<text x="677.5" y="595.0" text-anchor="middle" font-size="11" fill="#57606a">常驻 RPC 进程</text>
+<rect x="775" y="556" width="135" height="52" rx="10" fill="#f6f8fa" stroke="#57606a" stroke-width="1.4"/>
+<text x="842.5" y="579.0" text-anchor="middle" font-size="12.5" fill="#57606a" font-weight="600">opencode 适配器</text>
+<text x="842.5" y="595.0" text-anchor="middle" font-size="11" fill="#57606a">常驻 HTTP+SSE</text>
+<rect x="280" y="636" width="135" height="24" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="5 4"/>
+<text x="347.5" y="653.0" text-anchor="middle" font-size="12.5" fill="#94a3b8" font-weight="600">claude CLI</text>
+<rect x="445" y="636" width="135" height="24" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="5 4"/>
+<text x="512.5" y="653.0" text-anchor="middle" font-size="12.5" fill="#94a3b8" font-weight="600">codex CLI</text>
+<rect x="610" y="636" width="135" height="24" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="5 4"/>
+<text x="677.5" y="653.0" text-anchor="middle" font-size="12.5" fill="#94a3b8" font-weight="600">pi --mode rpc</text>
+<rect x="775" y="636" width="135" height="24" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="5 4"/>
+<text x="842.5" y="653.0" text-anchor="middle" font-size="12.5" fill="#94a3b8" font-weight="600">opencode serve</text>
+<rect x="16" y="298" width="210" height="60" rx="10" fill="#f0fdfa" stroke="#0d9488" stroke-width="1.4"/>
+<text x="121.0" y="325.0" text-anchor="middle" font-size="12.5" fill="#0d9488" font-weight="600">internal/registry</text>
+<text x="121.0" y="341.0" text-anchor="middle" font-size="11" fill="#57606a">注册 · 15s 心跳 · 退出注销</text>
+<rect x="16" y="396" width="210" height="44" rx="10" fill="#f6f8fa" stroke="#57606a" stroke-width="1.4"/>
+<text x="121.0" y="415.0" text-anchor="middle" font-size="12.5" fill="#57606a" font-weight="600">dashboard 子命令</text>
+<text x="121.0" y="431.0" text-anchor="middle" font-size="11" fill="#57606a">读注册表 · 版本比对 ⚠︎</text>
+<rect x="16" y="560" width="210" height="100" rx="10" fill="#faf5ff" stroke="#a855f7" stroke-width="1.4" stroke-dasharray="5 4"/>
+<text x="121.0" y="607.0" text-anchor="middle" font-size="12" fill="#a855f7" font-weight="600">数据目录（bridge home）</text>
+<text x="121.0" y="623.0" text-anchor="middle" font-size="10" fill="#57606a">~/.lark-coding-agent-bridge/</text>
+<text x="121" y="640" text-anchor="middle" font-size="9.5" fill="#57606a" style="paint-order:stroke;stroke:#ffffff;stroke-width:3px">config · registry · profiles · workspaces</text>
+<path d="M 880 78 L 880 298" fill="none" stroke="#2563eb" stroke-width="1.6" marker-end="url(#arw-b)"/>
+<text x="872" y="120" text-anchor="end" font-size="10.5" fill="#2563eb" style="paint-order:stroke;stroke:#ffffff;stroke-width:3px">WS 事件流</text>
+<path d="M 915 298 L 915 78" fill="none" stroke="#2563eb" stroke-width="1.6" marker-end="url(#arw-b)"/>
+<text x="908" y="140" text-anchor="end" font-size="10.5" fill="#2563eb" style="paint-order:stroke;stroke:#ffffff;stroke-width:3px">REST / CardKit</text>
+<path d="M 375 192 L 375 222" fill="none" stroke="#a855f7" stroke-width="1.3" marker-end="url(#arw-p)"/>
+<path d="M 595 192 L 595 222" fill="none" stroke="#a855f7" stroke-width="1.3" marker-end="url(#arw-p)"/>
+<path d="M 775 192 L 775 222" fill="none" stroke="#a855f7" stroke-width="1.3" marker-end="url(#arw-p)"/>
+<path d="M 530 326 L 580 326" fill="none" stroke="#16a34a" stroke-width="1.3" marker-end="url(#arw-gr)"/>
+<path d="M 555 268 L 555 384" fill="none" stroke="#ea580c" stroke-width="1.3" marker-end="url(#arw-o)"/>
+<text x="562" y="330" text-anchor="start" font-size="10.5" fill="#ea580c" style="paint-order:stroke;stroke:#ffffff;stroke-width:3px">配置 / 会话</text>
+<path d="M 660 354 L 660 384" fill="none" stroke="#2563eb" stroke-width="1.6" marker-end="url(#arw-b)"/>
+<text x="668" y="372" text-anchor="start" font-size="10.5" fill="#2563eb" style="paint-order:stroke;stroke:#ffffff;stroke-width:3px">事件</text>
+<path d="M 595 440 L 595 470" fill="none" stroke="#dc2626" stroke-width="1.6" marker-end="url(#arw-r)"/>
+<path d="M 347 526 L 347 556" fill="none" stroke="#0d9488" stroke-width="1.3" marker-end="url(#arw-t)"/>
+<path d="M 512 526 L 512 556" fill="none" stroke="#0d9488" stroke-width="1.3" marker-end="url(#arw-t)"/>
+<path d="M 677 526 L 677 556" fill="none" stroke="#0d9488" stroke-width="1.3" marker-end="url(#arw-t)"/>
+<path d="M 842 526 L 842 556" fill="none" stroke="#0d9488" stroke-width="1.3" marker-end="url(#arw-t)"/>
+<path d="M 910 470 L 915 470 Q 925 470 925 460 L 925 336 Q 925 326 915 326 L 910 326" fill="none" stroke="#0d9488" stroke-width="1.4" marker-end="url(#arw-t)"/>
+<text x="933" y="405" font-size="10.5" fill="#0d9488" text-anchor="middle" transform="rotate(90 933 405)" style="paint-order:stroke;stroke:#ffffff;stroke-width:3px">CardKit 更新</text>
+<path d="M 347 608 L 347 636" fill="none" stroke="#57606a" stroke-width="1.2" marker-end="url(#arw-g)"/>
+<path d="M 512 608 L 512 636" fill="none" stroke="#57606a" stroke-width="1.2" marker-end="url(#arw-g)"/>
+<path d="M 677 608 L 677 636" fill="none" stroke="#57606a" stroke-width="1.2" marker-end="url(#arw-g)"/>
+<path d="M 842 608 L 842 636" fill="none" stroke="#57606a" stroke-width="1.2" marker-end="url(#arw-g)"/>
+<path d="M 280 412 L 250 412 Q 240 412 240 402 L 240 346 Q 240 336 230 336 L 226 336" fill="none" stroke="#0d9488" stroke-width="1.3" marker-end="url(#arw-t)"/>
+<text x="233" y="380" text-anchor="middle" font-size="10.5" fill="#0d9488" style="paint-order:stroke;stroke:#ffffff;stroke-width:3px">写入 / 心跳</text>
+<path d="M 121 358 L 121 396" fill="none" stroke="#57606a" stroke-width="1.3" marker-end="url(#arw-g)"/>
+<text x="129" y="380" text-anchor="start" font-size="10.5" fill="#57606a" style="paint-order:stroke;stroke:#ffffff;stroke-width:3px">读取</text>
+<path d="M 16 330 L 18 330 Q 8 330 8 340 L 8 600 Q 8 610 18 610 L 16 610" fill="none" stroke="#a855f7" stroke-width="1.2" stroke-dasharray="6 4" marker-end="url(#arw-p)"/>
 </svg>
 <div class="cap">图 1 · 总体架构：单进程内部分层 + 本机 agent 进程 + 注册表/dashboard 侧链</div>
 </div>
@@ -787,6 +723,11 @@
     </marker>
   </defs>
 
+  <!-- 注解（顶部，避开底部 down→connecting 长线） -->
+  <rect x="60" y="20" width="510" height="46" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="76" y="40" font-size="11" fill="#57606a">connected 期间每个到达事件调用 MarkEvent() 刷新 LastEventAt；</text>
+  <text x="76" y="57" font-size="11" fill="#57606a">Status{State, LastEventAt, Restarts…} 供 /status 命令与日志观测。</text>
+
   <!-- states -->
   <rect x="60" y="170" width="180" height="70" rx="12" fill="#eef2f7" stroke="#57606a" stroke-width="1.5"/>
   <text x="150" y="200" text-anchor="middle" font-size="14" font-weight="700" fill="#1f2328">connecting</text>
@@ -804,29 +745,29 @@
   <text x="805" y="330" text-anchor="middle" font-size="14" font-weight="700" fill="#991b1b">down</text>
   <text x="805" y="352" text-anchor="middle" font-size="10.5" fill="#b91c1c">判定半死 → 强制重建</text>
 
-  <!-- transitions -->
-  <line x1="240" y1="205" x2="388" y2="205" stroke="#16a34a" stroke-width="1.8" marker-end="url(#ar10g)"/>
+  <!-- transitions（横平竖直 + 圆角折弯，各自独立车道） -->
+  <path d="M 240 205 H 388" fill="none" stroke="#16a34a" stroke-width="1.8" marker-end="url(#ar10g)"/>
   <text x="314" y="194" text-anchor="middle" font-size="11" fill="#15803d">握手成功</text>
 
-  <path d="M 570 190 C 640 160, 660 110, 708 100" fill="none" stroke="#ea580c" stroke-width="1.8" marker-end="url(#ar10o)"/>
-  <text x="640" y="130" text-anchor="middle" font-size="11" fill="#c2410c">OnReconnecting（SDK 层断线）</text>
+  <!-- connected -> reconnecting：顶边出，上方车道进左边 -->
+  <path d="M 470 170 V 87 Q 470 71 486 71 H 708" fill="none" stroke="#ea580c" stroke-width="1.8" marker-end="url(#ar10o)"/>
+  <text x="462" y="140" text-anchor="end" font-size="11" fill="#c2410c">OnReconnecting（SDK 层断线）</text>
 
-  <path d="M 710 115 C 640 130, 620 170, 572 190" fill="none" stroke="#16a34a" stroke-width="1.8" marker-end="url(#ar10g)"/>
-  <text x="628" y="162" text-anchor="middle" font-size="11" fill="#15803d">OnReconnected</text>
+  <!-- reconnecting -> connected：底边出，y154 车道回顶边（与上行线错开） -->
+  <path d="M 770 130 V 142 Q 770 154 758 154 H 542 Q 530 154 530 166 V 168" fill="none" stroke="#16a34a" stroke-width="1.8" marker-end="url(#ar10g)"/>
+  <text x="700" y="142" text-anchor="middle" font-size="11" fill="#15803d">OnReconnected</text>
 
-  <path d="M 570 225 C 650 240, 680 290, 718 315" fill="none" stroke="#dc2626" stroke-width="1.8" marker-end="url(#ar10r)"/>
-  <text x="668" y="272" text-anchor="middle" font-size="11" fill="#991b1b">REST 探测连续失败 ×3</text>
+  <!-- connected -> down：右边出，x640 车道下行，进 down 左边 -->
+  <path d="M 570 215 H 624 Q 640 215 640 231 V 319 Q 640 335 656 335 H 708" fill="none" stroke="#dc2626" stroke-width="1.8" marker-end="url(#ar10r)"/>
+  <text x="648" y="280" font-size="11" fill="#991b1b">REST 探测连续失败 ×3</text>
 
-  <path d="M 710 345 C 500 400, 240 380, 158 242" fill="none" stroke="#57606a" stroke-width="1.8" marker-end="url(#ar10)"/>
-  <text x="420" y="392" text-anchor="middle" font-size="11" fill="#57606a">client.Close() → 重新握手（Restarts +1）</text>
+  <!-- down -> connecting：底边出，底部 y402 长车道回 connecting 底边 -->
+  <path d="M 805 370 V 386 Q 805 402 789 402 H 154 Q 138 402 138 386 V 242" fill="none" stroke="#57606a" stroke-width="1.8" marker-end="url(#ar10)"/>
+  <text x="480" y="386" text-anchor="middle" font-size="11" fill="#57606a">client.Close() → 重新握手（Restarts +1）</text>
 
-  <path d="M 150 240 C 150 300, 240 320, 330 300" fill="none" stroke="#dc2626" stroke-width="1.5" marker-end="url(#ar10r)"/>
-  <text x="240" y="330" text-anchor="middle" font-size="11" fill="#991b1b">握手 15s 超时 → 重试</text>
-
-  <!-- 注解 -->
-  <rect x="60" y="370" width="510" height="46" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
-  <text x="76" y="390" font-size="11" fill="#57606a">connected 期间每个到达事件调用 MarkEvent() 刷新 LastEventAt；</text>
-  <text x="76" y="407" font-size="11" fill="#57606a">Status{State, LastEventAt, Restarts…} 供 /status 命令与日志观测。</text>
+  <!-- connecting 自环：左侧车道 -->
+  <path d="M 60 220 H 44 Q 28 220 28 204 V 185 Q 28 169 44 169 H 58" fill="none" stroke="#dc2626" stroke-width="1.5" marker-end="url(#ar10r)"/>
+  <text x="85" y="258" text-anchor="middle" font-size="11" fill="#991b1b">握手超时 → 重试</text>
 </svg>
 <div class="cap">图 10 · supervisor 状态机与转换条件</div>
 </div>
@@ -835,7 +776,7 @@
 <p>多个 bridge 实例（不同 profile）可能同时跑在一台机器上。每个进程启动时向注册表登记自己，dashboard 子命令读取注册表汇总成表格。</p>
 
 <div class="fig">
-<svg viewBox="0 0 960 460" width="900" role="img" aria-label="Dashboard 数据流图">
+<svg viewBox="0 0 960 470" width="900" role="img" aria-label="Dashboard 数据流图">
   <defs>
     <marker id="ar11" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
       <path d="M0,0 L7,3.5 L0,7 Z" fill="#57606a"/>
@@ -860,13 +801,13 @@
   <text x="155" y="275" text-anchor="middle" font-size="12" fill="#64748b">bridge 进程 C（已死）</text>
   <text x="155" y="293" text-anchor="middle" font-size="11" fill="#94a3b8">残留僵尸条目</text>
 
-  <!-- 注册表文件 -->
-  <rect x="370" y="110" width="260" height="130" rx="10" fill="#fdf4ff" stroke="#a855f7" stroke-width="1.5"/>
-  <text x="500" y="136" text-anchor="middle" font-size="12.5" font-weight="700" fill="#7e22ce">registry/processes.json</text>
-  <text x="500" y="158" text-anchor="middle" font-size="11" fill="#9333ea">~/.lark-coding-agent-bridge/registry/</text>
-  <text x="500" y="180" text-anchor="middle" font-size="11" fill="#9333ea">upsert 写入 · 15s 心跳刷新 heartbeatAt</text>
-  <text x="500" y="200" text-anchor="middle" font-size="11" fill="#9333ea">version = debug.ReadBuildInfo()</text>
-  <text x="500" y="220" text-anchor="middle" font-size="10.5" fill="#9333ea">vcs.revision / time / modified + GoVersion</text>
+  <!-- 注册表文件（文字右移，左缘留入线带） -->
+  <rect x="380" y="110" width="260" height="130" rx="10" fill="#fdf4ff" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="532" y="136" text-anchor="middle" font-size="12.5" font-weight="700" fill="#7e22ce">registry/processes.json</text>
+  <text x="532" y="158" text-anchor="middle" font-size="10.5" fill="#9333ea" class="mono">~/.lark-coding-agent-bridge/registry/</text>
+  <text x="532" y="180" text-anchor="middle" font-size="11" fill="#9333ea">upsert 写入 · 15s 心跳刷新 heartbeatAt</text>
+  <text x="532" y="200" text-anchor="middle" font-size="11" fill="#9333ea">version = debug.ReadBuildInfo()</text>
+  <text x="532" y="220" text-anchor="middle" font-size="10.5" fill="#9333ea">vcs.revision / time / modified + GoVersion</text>
 
   <!-- dashboard -->
   <rect x="710" y="60" width="230" height="230" rx="10" fill="#ffffff" stroke="#16a34a" stroke-width="1.5"/>
@@ -880,24 +821,31 @@
   <text x="725" y="250" font-size="11.5" fill="#1f2328">agent / workspace / version /</text>
   <text x="725" y="270" font-size="11.5" fill="#1f2328">启动时间 / 心跳</text>
 
-  <!-- 连线 -->
-  <line x1="290" y1="73" x2="420" y2="108" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar11)"/>
-  <line x1="290" y1="183" x2="430" y2="172" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar11)"/>
-  <line x1="290" y1="280" x2="420" y2="236" stroke="#94a3b8" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#ar11)"/>
-  <text x="316" y="90" font-size="10.5" fill="#57606a">注册/心跳</text>
+  <!-- 连线（横平竖直 + 圆角折弯） -->
+  <!-- A -> registry：x330 车道下行后入左缘 -->
+  <path d="M 290 73 H 314 Q 330 73 330 89 V 109 Q 330 125 346 125 H 378" fill="none" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar11)"/>
+  <text x="300" y="64" font-size="10.5" fill="#57606a">注册/心跳</text>
 
-  <line x1="630" y1="175" x2="708" y2="175" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar11)"/>
+  <!-- B -> registry：同高直线 -->
+  <path d="M 290 183 H 378" fill="none" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar11)"/>
+
+  <!-- C -> registry（残留条目）：x345 车道上行后入左缘 -->
+  <path d="M 290 280 H 329 Q 345 280 345 264 V 248 Q 345 232 361 232 H 378" fill="none" stroke="#94a3b8" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#ar11)"/>
+
+  <!-- registry -> dashboard：同高直线 -->
+  <path d="M 640 175 H 708" fill="none" stroke="#16a34a" stroke-width="1.6" marker-end="url(#ar11)"/>
   <text x="669" y="164" text-anchor="middle" font-size="10.5" fill="#15803d">读取</text>
 
-  <path d="M 825 290 C 825 350, 300 380, 168 312" fill="none" stroke="#dc2626" stroke-width="1.4" stroke-dasharray="6 3" marker-end="url(#ar11r)"/>
-  <text x="500" y="380" text-anchor="middle" font-size="11" fill="#991b1b">signal 0 探测失败 → 判定僵尸 → 从注册表清除</text>
+  <!-- dashboard -> C（僵尸清理）：底部 y354 大回环，入 C 底边 -->
+  <path d="M 825 290 V 338 Q 825 354 809 354 H 155 Q 139 354 139 338 V 312" fill="none" stroke="#dc2626" stroke-width="1.4" stroke-dasharray="6 3" marker-end="url(#ar11r)"/>
+  <text x="490" y="320" text-anchor="middle" font-size="11" fill="#991b1b">signal 0 探测失败 → 判定僵尸 → 从注册表清除</text>
 
   <!-- version 说明 -->
-  <rect x="20" y="340" width="630" height="100" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
-  <text x="36" y="364" font-size="12" font-weight="700" fill="#1f2328">版本来源：debug.ReadBuildInfo()</text>
-  <text x="36" y="386" font-size="11.5" fill="#57606a">version{Version, Commit, CommitTime, Dirty, GoVersion} —— Commit/CommitTime/Dirty 取自 vcs.revision / vcs.time / vcs.modified。</text>
-  <text x="36" y="406" font-size="11.5" fill="#57606a">可区分「正版发布版」与「开发分支 dirty 构建」；dashboard 据此标出与当前二进制不一致的实例（⚠︎）。</text>
-  <text x="36" y="428" font-size="11.5" fill="#57606a">升级替换二进制后，未重启的旧实例会被醒目标出，提示需要重启。</text>
+  <rect x="20" y="368" width="640" height="84" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="36" y="390" font-size="12" font-weight="700" fill="#1f2328">版本来源：debug.ReadBuildInfo()</text>
+  <text x="36" y="409" font-size="11" fill="#57606a">version{Version, Commit, CommitTime, Dirty, GoVersion} —— 取自 vcs.revision / vcs.time / vcs.modified。</text>
+  <text x="36" y="427" font-size="11" fill="#57606a">可区分「正版发布版」与「开发分支 dirty 构建」；dashboard 据此标出与当前二进制不一致的实例（⚠︎）。</text>
+  <text x="36" y="445" font-size="11" fill="#57606a">升级替换二进制后，未重启的旧实例会被醒目标出，提示需要重启。</text>
 </svg>
 <div class="cap">图 11 · 进程注册表与 dashboard 数据流</div>
 </div>
