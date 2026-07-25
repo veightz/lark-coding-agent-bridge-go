@@ -21,6 +21,9 @@ const helpText = `**可用命令**
 - /ws save <name> — 把当前目录保存为命名工作区
 - /ws use <name> — 切换到命名工作区
 - /ws remove <name> — 删除命名工作区
+- /sessions — 列出命令行里已有的 agent 会话
+- /bind <序号或id前缀> [--force] — 把当前聊天绑定到该会话
+- /unbind — 解除当前聊天的会话绑定
 - /stop — 停止当前运行
 - /status — 查看 profile、agent、工作目录和会话状态
 - /help — 显示本帮助
@@ -78,6 +81,15 @@ func (b *Bridge) handleCommand(msg *Message, content string) {
 
 	case "/ws":
 		b.handleWsCommand(msg, args, reply)
+
+	case "/sessions":
+		b.handleSessions(msg, reply)
+
+	case "/bind":
+		b.handleBind(msg, args, reply)
+
+	case "/unbind":
+		b.handleUnbind(msg, reply)
 
 	case "/status":
 		reply(b.statusText(scope))
@@ -275,9 +287,9 @@ func (b *Bridge) startQuickReply(groupChatID, cardMessageID, operatorID string) 
 		b.pendingReplies = map[string]*pendingReply{}
 	}
 	b.pendingReplies[operatorID] = &pendingReply{
-		groupChatID:    groupChatID,
-		cardMessageID:  cardMessageID,
-		promptMsgID:    msgID,
+		groupChatID:   groupChatID,
+		cardMessageID: cardMessageID,
+		promptMsgID:   msgID,
 	}
 	b.pendingRepliesMu.Unlock()
 }

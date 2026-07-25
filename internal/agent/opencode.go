@@ -19,9 +19,12 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"lark-coding-agent-bridge-go/internal/config"
 )
 
 // OpenCodeAdapter manages one opencode serve process and routes its
@@ -734,6 +737,47 @@ func missingText(delivered, full string) string {
 	// Stream and server disagree on content shape; trust the server and
 	// re-emit nothing (the finalize path already renders what we have).
 	return ""
+}
+
+// ListSessions enumerates opencode sessions known to the local server
+// (they persist on disk, so this covers CLI-originated sessions too).
+func (a *OpenCodeAdapter) ListSessions(limit int) ([]ExternalSession, error) {
+	srv, err := a.ensureServer()
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		ID        string `json:"id"`
+		Title     string `json:"title"`
+		Directory string `json:"directory"`
+		Time      struct {
+			Created int64 `json:"created"`
+			Updated int64 `json:"updated"`
+		} `json:"time"`
+	}
+	resp, err := srv.client.Get(srv.base + "/session")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, err
+	}
+	sort.Slice(raw, func(i, j int) bool { return raw[i].Time.Updated > raw[j].Time.Updated })
+	var out []ExternalSession
+	for _, r := range raw {
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+		out = append(out, ExternalSession{
+			ID:        r.ID,
+			Cwd:       r.Directory,
+			Preview:   r.Title,
+			UpdatedAt: time.UnixMilli(r.Time.Updated),
+			Agent:     config.AgentOpenCode,
+		})
+	}
+	return out, nil
 }
 
 // ─── ocRun ─────────────────────────────────────────────────────────

@@ -47,6 +47,7 @@ type Bridge struct {
 
 	Sessions   *state.SessionStore
 	Workspaces *state.WorkspaceStore
+	Bindings   *state.BindingStore
 	Media      *media.Cache
 
 	pending *PendingQueue
@@ -76,6 +77,10 @@ func NewBridge(
 	if err != nil {
 		return nil, err
 	}
+	bindings, err := state.LoadBindings(paths.BindingsFile(profileName))
+	if err != nil {
+		return nil, err
+	}
 	if workspaces.Get() == "" {
 		dir := profile.Workspaces.Default
 		if dir == "" {
@@ -100,6 +105,7 @@ func NewBridge(
 		Bot:         bot,
 		Sessions:    sessions,
 		Workspaces:  workspaces,
+		Bindings:    bindings,
 		Media:       media.NewCache(paths.MediaDir(profileName)),
 		runs:        map[string]*activeRun{},
 		cardScopes:  map[string]string{},
@@ -188,6 +194,13 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 	cwd, err := b.resolveCwd()
 	if err != nil {
 		return err
+	}
+	// /bind 绑定的会话记录了自己的 cwd（CLI 里发起会话的目录），
+	// 优先于聊天当前工作目录。
+	if boundSess, ok := b.Sessions.Get(scope); ok && boundSess.Cwd != "" {
+		if info, statErr := os.Stat(boundSess.Cwd); statErr == nil && info.IsDir() {
+			cwd = boundSess.Cwd
+		}
 	}
 
 	// Download attachments from every message in the batch.
@@ -331,6 +344,8 @@ eventLoop:
 func (b *Bridge) resetSession(scope string) {
 	b.Sessions.Delete(scope)
 	_ = b.Sessions.Flush()
+	b.Bindings.DeleteByScope(scope)
+	_ = b.Bindings.Flush()
 	if r, ok := b.Agent.(agent.SessionResetter); ok {
 		r.ResetSession(scope)
 	}
@@ -384,6 +399,9 @@ func (b *Bridge) Flush() {
 	}
 	if err := b.Workspaces.Flush(); err != nil {
 		log.Printf("[shutdown] workspaces flush: %v", err)
+	}
+	if err := b.Bindings.Flush(); err != nil {
+		log.Printf("[shutdown] bindings flush: %v", err)
 	}
 }
 

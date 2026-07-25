@@ -162,6 +162,10 @@ func (p Paths) WorkspacesFile(profile string) string {
 	return filepath.Join(p.ProfileDir(profile), "workspaces.json")
 }
 
+func (p Paths) BindingsFile(profile string) string {
+	return filepath.Join(p.ProfileDir(profile), "bindings.json")
+}
+
 func (p Paths) MediaDir(profile string) string {
 	return filepath.Join(p.ProfileDir(profile), "media")
 }

@@ -253,6 +253,35 @@ func (c *Client) GetBotInfo(ctx context.Context) (*BotInfo, error) {
 	return &BotInfo{OpenID: out.Bot.OpenID, AppName: out.Bot.AppName}, nil
 }
 
+// GetChatName resolves a chat's display name ("" for p2p chats or errors).
+func (c *Client) GetChatName(ctx context.Context, chatID string) string {
+	token, err := c.tenantAccessToken(ctx)
+	if err != nil {
+		return ""
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.BaseURL+"/open-apis/im/v1/chats/"+chatID, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Code int `json:"code"`
+		Data struct {
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || out.Code != 0 {
+		return ""
+	}
+	return out.Data.Name
+}
+
 func (c *Client) tenantAccessToken(ctx context.Context) (string, error) {
 	form := url.Values{}
 	form.Set("app_id", c.AppID)
