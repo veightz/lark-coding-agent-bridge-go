@@ -129,7 +129,7 @@ func (a *PiAdapter) spawn(opts RunOptions) (*piSession, error) {
 		stdin:    stdin,
 		cwd:      opts.Cwd,
 		pending:  map[string]chan piResponse{},
-		runChans: map[uint64]chan Event{},
+		runChans: map[uint64]*piRunSlot{},
 	}
 	go ps.readLoop(stdout)
 	go io.Copy(io.Discard, stderr)
@@ -141,10 +141,9 @@ func (a *PiAdapter) spawn(opts RunOptions) (*piSession, error) {
 			close(ch)
 			delete(ps.pending, id)
 		}
-		for id, ch := range ps.runChans {
-			safeSend(ch, Event{Type: EventError, Message: "pi 进程意外退出", TerminationReason: TermFailed})
-			close(ch)
-			delete(ps.runChans, id)
+		for id, slot := range ps.runChans {
+			safeSend(slot.ch, Event{Type: EventError, Message: "pi 进程意外退出", TerminationReason: TermFailed})
+			ps.closeSlotLocked(id, slot)
 		}
 		ps.mu.Unlock()
 	}()
@@ -170,9 +169,22 @@ type piSession struct {
 	reqSeq   uint64
 	runSeq   uint64
 	pending  map[string]chan piResponse
-	runChans map[uint64]chan Event // one per in-flight Run
+	runChans map[uint64]*piRunSlot // one per in-flight Run
 
 	sessionID string
+}
+
+// piRunSlot bundles a run's event channel with a settled signal that
+// fires when the channel is closed (terminal event or process death).
+type piRunSlot struct {
+	ch      chan Event
+	settled chan struct{}
+}
+
+func (ps *piSession) closeSlotLocked(id uint64, slot *piRunSlot) {
+	close(slot.ch)
+	close(slot.settled)
+	delete(ps.runChans, id)
 }
 
 func (ps *piSession) alive() bool {
@@ -293,13 +305,12 @@ func (ps *piSession) readLoop(stdout io.Reader) {
 			}
 		}
 		ps.mu.Lock()
-		for id, ch := range ps.runChans {
+		for id, slot := range ps.runChans {
 			for _, evt := range events {
-				safeSend(ch, evt)
+				safeSend(slot.ch, evt)
 			}
 			if terminal {
-				close(ch)
-				delete(ps.runChans, id)
+				ps.closeSlotLocked(id, slot)
 			}
 		}
 		ps.mu.Unlock()
@@ -319,6 +330,7 @@ func safeSend(ch chan Event, evt Event) {
 type piRun struct {
 	ps      *piSession
 	events  chan Event
+	settled chan struct{}
 	stopped sync.Once
 }
 
@@ -331,9 +343,10 @@ func (ps *piSession) startRun(opts RunOptions) (Run, error) {
 	ps.mu.Lock()
 	ps.runSeq++
 	id := ps.runSeq
-	ch := make(chan Event, 256)
-	ps.runChans[id] = ch
+	slot := &piRunSlot{ch: make(chan Event, 256), settled: make(chan struct{})}
+	ps.runChans[id] = slot
 	sessionID := ps.sessionID
+	ch := slot.ch
 	ps.mu.Unlock()
 
 	cmd := map[string]any{
@@ -357,8 +370,7 @@ func (ps *piSession) startRun(opts RunOptions) (Run, error) {
 	resp, err := ps.send(cmd, true)
 	if err != nil || !resp.Success {
 		ps.mu.Lock()
-		delete(ps.runChans, id)
-		close(ch)
+		ps.closeSlotLocked(id, slot)
 		ps.mu.Unlock()
 		if err == nil {
 			err = fmt.Errorf("prompt 被拒绝: %s", resp.Error)
@@ -369,17 +381,38 @@ func (ps *piSession) startRun(opts RunOptions) (Run, error) {
 	if sessionID != "" {
 		safeSend(ch, Event{Type: EventSystem, SessionID: sessionID})
 	}
-	return &piRun{ps: ps, events: ch}, nil
+	return &piRun{ps: ps, events: ch, settled: slot.settled}, nil
 }
 
 func (r *piRun) Events() <-chan Event { return r.events }
 
 // Stop sends a graceful abort; the process stays alive for the next run.
+// If the abort doesn't settle the run within abortGrace (wedged process),
+// escalate to killing the process — the next Run respawns it fresh.
 func (r *piRun) Stop() {
 	r.stopped.Do(func() {
-		_, _ = r.ps.send(map[string]any{"type": "abort"}, true)
+		// Escalation timer starts BEFORE the abort round-trip: if the
+		// process is wedged, the 15s send timeout must not delay the kill.
+		go func() {
+			timer := time.NewTimer(abortGrace)
+			defer timer.Stop()
+			select {
+			case <-r.settled:
+				// 优雅中止成功
+			case <-timer.C:
+				log.Printf("[pi] abort %s 未生效，升级杀进程", abortGrace)
+				r.ps.kill()
+			}
+		}()
+		if _, err := r.ps.send(map[string]any{"type": "abort"}, true); err != nil {
+			r.ps.kill()
+		}
 	})
 }
+
+// abortGrace is how long Stop waits for a graceful abort to close the run
+// before killing the process.
+const abortGrace = 5 * time.Second
 
 func (r *piRun) WaitExit(timeoutMs int) bool { return true }
 

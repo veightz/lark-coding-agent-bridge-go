@@ -48,3 +48,10 @@ preferences.idleTimeoutMinutes（默认 10，负值关闭）无事件 → run.St
    `session.idle` 时，把丢失的文本后缀补发后再发终态事件。
    对账基准是 dispatch 时累积的 delivered 文本（见 reconcilePoll 单测）。
    SSE 仍是快路径（毫秒级流式），轮询只兜底（3s 粒度）。
+
+## 补充（2026-07-25）：pi abort 升级
+
+pi 的 `/stop` 原本只发 `abort` 命令，进程卡死时 run 会永远悬挂。
+现在 Stop 先启动 5s 升级计时器再发 abort：超时未 settled 直接杀进程
+（piRunSlot.settled 在事件 channel 关闭时触发；被杀的进程由下一次
+Run 自动重拉，sessionId 从磁盘恢复会话）。单测：TestPiAbortEscalation。
