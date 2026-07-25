@@ -99,6 +99,8 @@ func (a *OpenCodeAdapter) Run(opts RunOptions) (Run, error) {
 		srv.closeRun(sessionID, run)
 		return nil, fmt.Errorf("prompt_async 失败: %w", err)
 	}
+	// SSE 是快路径，轮询是兜底：丢帧/半死流也能把结果轮询回来。
+	go srv.pollRun(run)
 	return run, nil
 }
 
@@ -201,6 +203,11 @@ type ocServer struct {
 	partKinds  map[string]string // partID → part type ("text"/"reasoning")
 	stopping   bool
 	eventLoops map[string]bool // directories with an active SSE loop
+	// SSE 看门狗状态（按目录）
+	lastFrame  map[string]time.Time
+	loopCancel map[string]context.CancelFunc
+	// 已投递文本（sessionID → messageID → text），轮询回补的基准
+	delivered map[string]map[string]string
 }
 
 func startOCServer(binary string, port int, env map[string]string) (*ocServer, error) {
@@ -217,6 +224,9 @@ func startOCServer(binary string, port int, env map[string]string) (*ocServer, e
 		runs:       map[string]map[uint64]*ocRun{},
 		partKinds:  map[string]string{},
 		eventLoops: map[string]bool{},
+		lastFrame:  map[string]time.Time{},
+		loopCancel: map[string]context.CancelFunc{},
+		delivered:  map[string]map[string]string{},
 	}
 
 	// Wait for the server to accept connections.
@@ -312,6 +322,7 @@ func (s *ocServer) registerRun(sessionID, directory string) *ocRun {
 	if !s.eventLoops[directory] {
 		s.eventLoops[directory] = true
 		go s.eventLoop(directory)
+		go s.frameWatchdog(directory)
 	}
 	s.mu.Unlock()
 	return run
@@ -341,6 +352,24 @@ func (s *ocServer) dispatch(env ocEventEnvelope) {
 	events, terminal := s.translate(env)
 	if len(events) == 0 && !terminal {
 		return
+	}
+	// Record delivered main text so the poller can backfill anything the
+	// SSE stream lost mid-turn.
+	if env.Type == "message.part.delta" {
+		if messageID, _ := env.Properties["messageID"].(string); messageID != "" {
+			if delta, _ := env.Properties["delta"].(string); delta != "" {
+				for _, evt := range events {
+					if evt.Type == EventText {
+						s.mu.Lock()
+						if s.delivered[sessionID] == nil {
+							s.delivered[sessionID] = map[string]string{}
+						}
+						s.delivered[sessionID][messageID] += delta
+						s.mu.Unlock()
+					}
+				}
+			}
+		}
 	}
 	s.mu.Lock()
 	runs := s.runs[sessionID]
@@ -438,7 +467,9 @@ func (s *ocServer) translate(env ocEventEnvelope) (events []Event, terminal bool
 }
 
 // eventLoop maintains the directory-scoped SSE subscription with backoff
-// reconnect.
+// reconnect, plus a frame watchdog: opencode emits server.heartbeat frames
+// regularly, so a stream that stays "open" but silent for too long is
+// half-dead — cancel it and reconnect instead of trusting it.
 func (s *ocServer) eventLoop(directory string) {
 	backoff := time.Second
 	for {
@@ -448,7 +479,14 @@ func (s *ocServer) eventLoop(directory string) {
 		if stopping {
 			return
 		}
-		err := s.consumeEvents(directory)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		s.mu.Lock()
+		s.loopCancel[directory] = cancel
+		s.mu.Unlock()
+
+		err := s.consumeEvents(ctx, directory)
+		cancel()
 		if err != nil {
 			log.Printf("[opencode] SSE 断开 (dir=%s): %v（%s 后重连）", directory, err, backoff)
 		}
@@ -461,16 +499,48 @@ func (s *ocServer) eventLoop(directory string) {
 	}
 }
 
-func (s *ocServer) consumeEvents(directory string) error {
+// sseStaleAfter bounds the silence tolerated on a directory stream.
+// Heartbeats arrive far more often than this.
+const sseStaleAfter = 75 * time.Second
+
+// frameWatchdog cancels the directory's SSE connection when no frame
+// (including heartbeats) has arrived for sseStaleAfter.
+func (s *ocServer) frameWatchdog(directory string) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.mu.Lock()
+		stopping := s.stopping
+		last := s.lastFrame[directory]
+		cancel := s.loopCancel[directory]
+		s.mu.Unlock()
+		if stopping {
+			return
+		}
+		if !last.IsZero() && time.Since(last) > sseStaleAfter && cancel != nil {
+			log.Printf("[opencode] SSE 超过 %s 无帧（疑似半死），强制重连 (dir=%s)", sseStaleAfter, directory)
+			cancel()
+		}
+	}
+}
+
+func (s *ocServer) markFrame(directory string) {
+	s.mu.Lock()
+	s.lastFrame[directory] = time.Now()
+	s.mu.Unlock()
+}
+
+func (s *ocServer) consumeEvents(ctx context.Context, directory string) error {
 	url := s.base + "/event"
 	if directory != "" {
 		url += "?directory=" + urlQueryEscape(directory)
 	}
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
-	// No client timeout: the stream is meant to stay open.
+	// No client timeout: the stream is meant to stay open; staleness is
+	// handled by frameWatchdog cancelling ctx.
 	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
 		return err
@@ -479,11 +549,13 @@ func (s *ocServer) consumeEvents(directory string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET /event: HTTP %d", resp.StatusCode)
 	}
+	s.markFrame(directory)
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
 	var dataLines []string
 	for scanner.Scan() {
+		s.markFrame(directory)
 		line := scanner.Text()
 		if line == "" { // end of SSE frame
 			if len(dataLines) > 0 {
@@ -500,7 +572,168 @@ func (s *ocServer) consumeEvents(directory string) error {
 			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 		}
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return fmt.Errorf("SSE 流被对端关闭")
+}
+
+// ─── 轮询回补：SSE 丢帧时的第二通道 ──────────────────────────────
+
+// pollInterval is how often an active run reconciles against the
+// session's message list. SSE is the fast path; this is the safety net.
+const pollInterval = 3 * time.Second
+
+// ocMessageEntry mirrors the relevant slice of GET /session/{id}/message.
+type ocMessageEntry struct {
+	Info struct {
+		ID   string `json:"id"`
+		Role string `json:"role"`
+		Time struct {
+			Created   int64 `json:"created"`
+			Completed int64 `json:"completed"`
+		} `json:"time"`
+		Error *struct {
+			Name string         `json:"name"`
+			Data map[string]any `json:"data"`
+		} `json:"error"`
+	} `json:"info"`
+	Parts []struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"parts"`
+}
+
+func (m *ocMessageEntry) text() string {
+	var sb strings.Builder
+	for _, p := range m.Parts {
+		if p.Type == "text" {
+			sb.WriteString(p.Text)
+		}
+	}
+	return sb.String()
+}
+
+// pollRun reconciles the run against the server's message list until the
+// turn provably ends (assistant message completed / errored) or the run
+// is closed by the SSE path. Any text the stream lost is re-emitted as a
+// single catch-up delta before the terminal event.
+func (s *ocServer) pollRun(run *ocRun) {
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if !s.runRegistered(run) {
+			return
+		}
+		messages, err := s.fetchMessages(run.sessionID, run.directory)
+		if err != nil || len(messages) == 0 {
+			continue
+		}
+		last := lastAssistant(messages)
+		if last == nil {
+			continue
+		}
+		s.mu.Lock()
+		delivered := s.delivered[run.sessionID][last.Info.ID]
+		s.mu.Unlock()
+		events, terminal := reconcilePoll(delivered, last)
+		if !terminal {
+			continue
+		}
+		backfilled := 0
+		for _, evt := range events {
+			if evt.Type == EventText {
+				backfilled += len(evt.Delta)
+			}
+		}
+		log.Printf("[opencode] 轮询确认 turn 结束 (session=%s, 回补 %d 字符)", run.sessionID, backfilled)
+		s.mu.Lock()
+		runs := s.runs[run.sessionID]
+		if runs != nil {
+			if _, ok := runs[run.id]; ok {
+				for _, evt := range events {
+					safeSend(run.events, evt)
+				}
+				close(run.events)
+				delete(runs, run.id)
+				if len(runs) == 0 {
+					delete(s.runs, run.sessionID)
+				}
+			}
+		}
+		s.mu.Unlock()
+		return
+	}
+}
+
+func (s *ocServer) runRegistered(run *ocRun) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.runs[run.sessionID][run.id]
+	return ok
+}
+
+func (s *ocServer) fetchMessages(sessionID, directory string) ([]ocMessageEntry, error) {
+	url := s.base + "/session/" + sessionID + "/message?directory=" + urlQueryEscape(directory)
+	resp, err := s.client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET message: HTTP %d", resp.StatusCode)
+	}
+	var out []ocMessageEntry
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func lastAssistant(messages []ocMessageEntry) *ocMessageEntry {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Info.Role == "assistant" {
+			return &messages[i]
+		}
+	}
+	return nil
+}
+
+// reconcilePoll decides what a poll cycle should emit. Pure function.
+func reconcilePoll(delivered string, last *ocMessageEntry) (events []Event, terminal bool) {
+	if last.Info.Time.Completed == 0 && last.Info.Error == nil {
+		return nil, false // turn still running
+	}
+	full := last.text()
+	if missing := missingText(delivered, full); missing != "" {
+		events = append(events, Event{Type: EventText, Delta: missing})
+	}
+	if last.Info.Error != nil {
+		name := last.Info.Error.Name
+		if name == "MessageAbortedError" {
+			return append(events, Event{Type: EventDone, TerminationReason: TermInterrupted}), true
+		}
+		msg := stringField(last.Info.Error.Data, "message")
+		if msg == "" {
+			msg = name
+		}
+		return append(events, Event{Type: EventError, Message: "opencode: " + msg, TerminationReason: TermFailed}), true
+	}
+	return append(events, Event{Type: EventDone, TerminationReason: TermNormal}), true
+}
+
+// missingText returns the suffix of full the stream never delivered.
+func missingText(delivered, full string) string {
+	if delivered == "" {
+		return full
+	}
+	if strings.HasPrefix(full, delivered) {
+		return full[len(delivered):]
+	}
+	// Stream and server disagree on content shape; trust the server and
+	// re-emit nothing (the finalize path already renders what we have).
+	return ""
 }
 
 // ─── ocRun ─────────────────────────────────────────────────────────

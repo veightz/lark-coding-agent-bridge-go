@@ -302,6 +302,10 @@ func translate(ocEvent) []Event
 // session.idle → Event{done}；session.error(MessageAbortedError) → 中断收尾
 
 // run 路径：sessionFor → POST /session/{id}/prompt_async?directory=&lt;cwd&gt;（异步）→ 目录级 SSE 回流事件
+
+// 健壮性双保险：
+// frameWatchdog(dir)：75s 无帧（含 heartbeat）→ cancel 强制重连
+// pollRun(run)：每 3s GET /session/{id}/message 对账，reconcilePoll 补发丢失文本后再发终态
 // ocRun.Stop() = POST /session/{id}/abort</code></pre>
 <div class="note"><b>选 serve 而非 ACP 的原因（与实现直接相关）：</b>单进程多 session 是一等公民（<code>sessions</code> 映射 + 按工作目录的 SSE 流按 sessionID 扇出）、有 <code>/global/health</code> 做存活探测、事件粒度更细（part 级 delta 与工具全生命周期）。会话由 opencode 磁盘持久化，bridge 重启后凭 sessionID 续聊。</div>
 

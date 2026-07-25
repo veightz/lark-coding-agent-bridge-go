@@ -36,3 +36,15 @@ preferences.idleTimeoutMinutes（默认 10，负值关闭）无事件 → run.St
   连接维度信息。
 - /stop 统一走各 agent 原生中断（pi abort / opencode abort / SIGTERM→SIGKILL），
   与看门狗共用同一路径。
+
+## 补充（2026-07-25）：opencode 双通道读取
+
+针对 opencode SSE 偶发丢帧的社区反馈，适配器再加两道保险：
+
+1. **SSE 帧看门狗**：目录级流记录最近帧时间（heartbeat 也算），
+   75s 无帧即判定半死，主动 cancel 重连（原仅在网络错误时重连）。
+2. **轮询回补**：每个活跃 run 每 3s 拉一次 `GET /session/{id}/message`，
+   以服务端消息列表为准对账——assistant 消息 completed 而 SSE 未收到
+   `session.idle` 时，把丢失的文本后缀补发后再发终态事件。
+   对账基准是 dispatch 时累积的 delivered 文本（见 reconcilePoll 单测）。
+   SSE 仍是快路径（毫秒级流式），轮询只兜底（3s 粒度）。

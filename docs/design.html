@@ -83,7 +83,7 @@
   <li><b>多 profile</b>：配置与会话/工作区隔离存储在 <code>~/.lark-coding-agent-bridge/</code> 下。</li>
   <li><b>四种 agent 适配器</b>：spawn-per-message（claude、codex）与常驻进程（pi RPC、opencode HTTP+SSE）两类形态，统一为同一事件流抽象。</li>
   <li><b>流式卡片</b>：CardKit 2.0，400ms 节流全卡更新，飞书客户端呈现打字机效果。</li>
-  <li><b>三层健壮性</b>：SDK 重连 + supervisor 半死连接检测 + run 级 idle 看门狗。</li>
+  <li><b>三层健壮性</b>：SDK 重连 + supervisor 半死连接检测 + run 级 idle 看门狗；opencode 另加 SSE 帧看门狗（75s 无帧强制重连）与 3s 轮询回补（以服务端消息列表对账，丢帧文本自动补回）。</li>
   <li><b>运维闭环</b>：进程注册表 + dashboard + 自升级。</li>
 </ul>
 
