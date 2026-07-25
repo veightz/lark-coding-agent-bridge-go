@@ -229,6 +229,9 @@ func WriteJSONAtomic(path string, v any) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		return err
+	}
 	return os.Rename(tmpName, path)
 }
 
