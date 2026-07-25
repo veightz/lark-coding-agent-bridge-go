@@ -18,6 +18,8 @@ const (
 type RenderOptions struct {
 	// StopButton adds the ⏹ callback button while running.
 	StopButton bool
+	// GroupChat adds the "继续对话" quick-reply button (group chats only).
+	GroupChat bool
 }
 
 // Render builds the CardKit 2.0 card JSON for the current run state.
@@ -65,6 +67,10 @@ func Render(state *RunState, opts RenderOptions) map[string]any {
 		if opts.StopButton {
 			elements = append(elements, stopButton())
 		}
+	} else if state.Terminal == TerminalDone && opts.GroupChat {
+		// Finished card in a group chat: add quick-reply button so users
+		// don't need to @-mention the bot. Clicks trigger a p2p prompt.
+		elements = append(elements, quickReplyButton())
 	}
 
 	return map[string]any{
@@ -200,6 +206,18 @@ func stopButton() map[string]any {
 		"behaviors": []map[string]any{{
 			"type":  "callback",
 			"value": map[string]any{"cmd": "stop"},
+		}},
+	}
+}
+
+func quickReplyButton() map[string]any {
+	return map[string]any{
+		"tag":  "button",
+		"text": map[string]any{"tag": "plain_text", "content": "💬 继续对话"},
+		"type": "primary",
+		"behaviors": []map[string]any{{
+			"type":  "callback",
+			"value": map[string]any{"cmd": "quick_reply"},
 		}},
 	}
 }

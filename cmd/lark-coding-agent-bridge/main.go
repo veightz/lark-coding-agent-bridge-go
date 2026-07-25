@@ -207,16 +207,19 @@ func handleCardAction(br *bridge.Bridge, event *callback.CardActionTriggerEvent)
 	if event == nil || event.Event == nil {
 		return ""
 	}
-	var chatID, messageID string
+	var chatID, messageID, operatorID string
 	var value map[string]any
 	if event.Event.Context != nil {
 		chatID = event.Event.Context.OpenChatID
 		messageID = event.Event.Context.OpenMessageID
 	}
+	if event.Event.Operator != nil {
+		operatorID = event.Event.Operator.OpenID
+	}
 	if event.Event.Action != nil {
 		value = event.Event.Action.Value
 	}
-	return br.HandleCardAction(chatID, messageID, value)
+	return br.HandleCardAction(chatID, messageID, operatorID, value)
 }
 
 // loadOrOnboard loads the profile, running the QR wizard (or --app-id

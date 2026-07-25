@@ -29,6 +29,13 @@ type activeRun struct {
 	scope string
 }
 
+// pendingReply tracks a quick_reply button click awaiting the user's p2p reply.
+type pendingReply struct {
+	groupChatID   string
+	cardMessageID string
+	promptMsgID   string // the "please reply" p2p message ID
+}
+
 // Bridge bundles every dependency of the message pipeline.
 type Bridge struct {
 	Paths       config.Paths
@@ -47,6 +54,9 @@ type Bridge struct {
 	runsMu     sync.Mutex
 	runs       map[string]*activeRun // scope → run
 	cardScopes map[string]string     // card message id → scope (stop button)
+
+	pendingRepliesMu sync.Mutex
+	pendingReplies   map[string]*pendingReply // operatorID → pending (quick_reply)
 }
 
 // NewBridge wires the pipeline. Call HandleMessage / HandleCardAction.
@@ -108,6 +118,22 @@ func (b *Bridge) HandleMessage(event *larkimEvent) {
 	if msg.SenderID != "" && msg.SenderID == b.botOpenID() {
 		return
 	}
+
+	// P2P quick-reply: if this user clicked "💬 继续对话", forward their
+	// text back to the group chat (no @ mention needed in p2p).
+	if msg.ChatType == "p2p" && msg.SenderID != "" {
+		if pr := b.consumePendingReply(msg.SenderID); pr != nil {
+			content := strings.TrimSpace(msg.Content)
+			if content != "" {
+				// Forward to the original group chat.
+				b.forwardToGroup(pr.groupChatID, pr.cardMessageID, msg.SenderID, content)
+			} else if len(msg.Resources) > 0 {
+				b.forwardToGroup(pr.groupChatID, pr.cardMessageID, msg.SenderID, msg.Content)
+			}
+			return
+		}
+	}
+
 	// Groups require an @bot mention; DMs don't. @all alone doesn't count.
 	if msg.ChatType != "p2p" && !msg.MentionedBot {
 		return
@@ -208,7 +234,7 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 
 	stream := card.NewStream(b.Lark, first.ChatID, first.MessageID)
 	runState := card.InitialState()
-	if err := stream.Start(ctx, card.Render(runState, card.RenderOptions{StopButton: true})); err != nil {
+	if err := stream.Start(ctx, card.Render(runState, card.RenderOptions{StopButton: true, GroupChat: first.ChatType != "p2p"})); err != nil {
 		run.Stop()
 		return fmt.Errorf("创建回复卡片失败: %w", err)
 	}
@@ -259,7 +285,7 @@ eventLoop:
 					newSess.ThreadID = evt.ThreadID
 				}
 			}
-			stream.Update(card.Render(runState, card.RenderOptions{StopButton: true}))
+			stream.Update(card.Render(runState, card.RenderOptions{StopButton: true, GroupChat: first.ChatType != "p2p"}))
 		case <-idleC:
 			// Idle watchdog: the agent emitted nothing for the whole
 			// window — kill the run and annotate the card.
@@ -286,7 +312,7 @@ eventLoop:
 	default:
 		runState = runState.FinalizeIfRunning()
 	}
-	stream.Update(card.Render(runState, card.RenderOptions{}))
+	stream.Update(card.Render(runState, card.RenderOptions{GroupChat: first.ChatType != "p2p"}))
 	stream.Finish(summaryOf(runState))
 
 	if newSess.SessionID != "" || newSess.ThreadID != "" {

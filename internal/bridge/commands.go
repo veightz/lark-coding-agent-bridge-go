@@ -2,10 +2,15 @@ package bridge
 
 import (
 	"context"
+	"log"
 	"os"
 	"sort"
 	"strings"
 	"time"
+
+	"lark-coding-agent-bridge-go/internal/agent"
+	"lark-coding-agent-bridge-go/internal/card"
+	"lark-coding-agent-bridge-go/internal/state"
 )
 
 const helpText = `**可用命令**
@@ -228,15 +233,159 @@ func validateWorkspace(input string) (string, string) {
 	return dir, ""
 }
 
-// HandleCardAction processes card button callbacks (the ⏹ stop button).
+// HandleCardAction processes card button callbacks (⏹ stop / 💬 quick reply).
 // Returns a toast message for the clicker, or "" for none.
-func (b *Bridge) HandleCardAction(chatID, messageID string, value map[string]any) string {
+func (b *Bridge) HandleCardAction(chatID, messageID, operatorID string, value map[string]any) string {
 	cmd, _ := value["cmd"].(string)
-	if cmd != "stop" {
+	switch cmd {
+	case "stop":
+		if b.stopRunByCardMessage(messageID) {
+			return "已停止当前运行"
+		}
+		return "任务已结束"
+	case "quick_reply":
+		if operatorID == "" {
+			return ""
+		}
+		go b.startQuickReply(chatID, messageID, operatorID)
+		return "💬 请查看机器人的私信"
+	default:
 		return ""
 	}
-	if b.stopRunByCardMessage(messageID) {
-		return "已停止当前运行"
+}
+
+// startQuickReply asks the user to reply in p2p, then routes their text
+// back to the group chat. This avoids the @-mention requirement in groups.
+func (b *Bridge) startQuickReply(groupChatID, cardMessageID, operatorID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Tell the user to reply in private chat (no @ needed in p2p).
+	msgID, err := b.Lark.SendText(ctx, operatorID,
+		"💬 你想让机器人做什么？请直接回复这条消息。\n\n回复后我会在群里继续处理。",
+		"")
+	if err != nil {
+		log.Printf("[quick_reply] send p2p prompt to %s failed: %v", operatorID, err)
+		return
 	}
-	return "任务已结束"
+
+	// Register so the next p2p message from this user is forwarded to the group.
+	b.pendingRepliesMu.Lock()
+	if b.pendingReplies == nil {
+		b.pendingReplies = map[string]*pendingReply{}
+	}
+	b.pendingReplies[operatorID] = &pendingReply{
+		groupChatID:    groupChatID,
+		cardMessageID:  cardMessageID,
+		promptMsgID:    msgID,
+	}
+	b.pendingRepliesMu.Unlock()
+}
+
+// consumePendingReply checks and removes a pending quick_reply registration.
+func (b *Bridge) consumePendingReply(operatorID string) *pendingReply {
+	b.pendingRepliesMu.Lock()
+	defer b.pendingRepliesMu.Unlock()
+	if b.pendingReplies == nil {
+		return nil
+	}
+	pr, ok := b.pendingReplies[operatorID]
+	if !ok {
+		return nil
+	}
+	delete(b.pendingReplies, operatorID)
+	return pr
+}
+
+// forwardToGroup takes the user's p2p reply text and runs it as a new
+// agent in the original group chat, avoiding the @-mention requirement.
+func (b *Bridge) forwardToGroup(groupChatID, cardMessageID, userOpenID, text string) {
+	log.Printf("[quick_reply] forwarding from %s to group %s: %.60s", userOpenID, groupChatID, text)
+
+	// Build a synthetic event to reuse the normal run pipeline.
+	scope := groupChatID
+	sess, _ := b.Sessions.Get(scope)
+	cwd, err := b.resolveCwd()
+	if err != nil {
+		log.Printf("[quick_reply] resolveCwd: %v", err)
+		return
+	}
+
+	runOpts := agent.RunOptions{
+		RunID:     scope + "-qr-" + time.Now().Format("150405.000"),
+		Scope:     scope,
+		Prompt:    text,
+		Cwd:       cwd,
+		Access:    b.Profile.DefaultAccess(),
+		SessionID: sess.SessionID,
+		ThreadID:  sess.ThreadID,
+	}
+
+	run, err := b.Agent.Run(runOpts)
+	if err != nil {
+		log.Printf("[quick_reply] agent.Run: %v", err)
+		return
+	}
+
+	b.runsMu.Lock()
+	b.runs[scope] = &activeRun{run: run, scope: scope}
+	b.runsMu.Unlock()
+	defer func() {
+		b.runsMu.Lock()
+		delete(b.runs, scope)
+		b.runsMu.Unlock()
+	}()
+
+	stream := card.NewStream(b.Lark, groupChatID, cardMessageID)
+	runState := card.InitialState()
+	if err := stream.Start(ctxb(), card.Render(runState, card.RenderOptions{StopButton: true, GroupChat: true})); err != nil {
+		run.Stop()
+		log.Printf("[quick_reply] stream.Start: %v", err)
+		return
+	}
+
+	b.runsMu.Lock()
+	b.cardScopes[stream.MessageID()] = scope
+	b.runsMu.Unlock()
+	defer func() {
+		b.runsMu.Lock()
+		delete(b.cardScopes, stream.MessageID())
+		b.runsMu.Unlock()
+	}()
+
+	newSess := state.Session{Cwd: cwd, Model: sess.Model}
+	eventsCh := run.Events()
+	for evt := range eventsCh {
+		runState = runState.Reduce(evt)
+		switch evt.Type {
+		case agent.EventSystem:
+			if evt.SessionID != "" {
+				newSess.SessionID = evt.SessionID
+			}
+			if evt.ThreadID != "" {
+				newSess.ThreadID = evt.ThreadID
+			}
+		case agent.EventDone:
+			if evt.SessionID != "" {
+				newSess.SessionID = evt.SessionID
+			}
+			if evt.ThreadID != "" {
+				newSess.ThreadID = evt.ThreadID
+			}
+		}
+		stream.Update(card.Render(runState, card.RenderOptions{StopButton: true, GroupChat: true}))
+	}
+
+	runState = runState.FinalizeIfRunning()
+	stream.Update(card.Render(runState, card.RenderOptions{GroupChat: true}))
+	stream.Finish(runState.TextContent())
+
+	if newSess.SessionID != "" || newSess.ThreadID != "" {
+		b.Sessions.Set(scope, newSess)
+	}
+}
+
+// ctxb returns a background context (convenience helper).
+func ctxb() context.Context {
+	return context.Background()
 }
