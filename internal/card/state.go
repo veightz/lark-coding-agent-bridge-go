@@ -5,8 +5,10 @@ package card
 
 import (
 	"strings"
+	"time"
 
 	"lark-coding-agent-bridge-go/internal/agent"
+	"lark-coding-agent-bridge-go/internal/pricing"
 )
 
 // ToolStatus is a tool call's lifecycle state.
@@ -20,11 +22,12 @@ const (
 
 // ToolEntry is one tool call shown on the card.
 type ToolEntry struct {
-	ID     string
-	Name   string
-	Input  any
-	Status ToolStatus
-	Output string
+	ID         string
+	Name       string
+	Input      any
+	Status     ToolStatus
+	Output     string
+	DurationMs int64 // elapsed wall-clock ms while running (set by bridge)
 }
 
 // BlockKind distinguishes text blocks from tool blocks.
@@ -70,7 +73,9 @@ type RunStats struct {
 	InputTokens       int     // prompt tokens
 	OutputTokens      int     // completion tokens
 	CachedInputTokens int     // cached prompt tokens
-	CostUSD           float64 // estimated cost
+	CostUSD           float64 // agent-reported cost in USD
+	CostCNY           float64 // calculated cost in CNY from pricing table
+	Model             string  // model name from EventSystem
 	UsageAvailable    bool    // true if any usage data was reported
 }
 
@@ -151,12 +156,24 @@ func (s *RunState) Reduce(evt agent.Event) *RunState {
 			}
 		}
 
+	case agent.EventSystem:
+		if evt.Model != "" {
+			next.Stats.Model = evt.Model
+		}
+
 	case agent.EventUsage:
 		next.Stats.InputTokens = evt.InputTokens
 		next.Stats.OutputTokens = evt.OutputTokens
 		next.Stats.CachedInputTokens = evt.CachedInputTokens
 		next.Stats.CostUSD = evt.CostUSD
 		next.Stats.UsageAvailable = true
+		// Calculate CNY cost from pricing table when model is known
+		if next.Stats.Model != "" {
+			cny, _ := pricing.Calculate(next.Stats.Model, evt.InputTokens, evt.OutputTokens, evt.CachedInputTokens, time.Now())
+			if cny > 0 {
+				next.Stats.CostCNY = cny
+			}
+		}
 
 	case agent.EventError:
 		switch evt.TerminationReason {
@@ -217,6 +234,16 @@ func (s *RunState) FinalizeIfRunning() *RunState {
 	next.Terminal = TerminalDone
 	next.Footer = FooterNone
 	return &next
+}
+
+// LastRunningTool returns the most recent tool block still running.
+func (s *RunState) LastRunningTool() *ToolEntry {
+	for i := len(s.Blocks) - 1; i >= 0; i-- {
+		if s.Blocks[i].Kind == BlockTool && s.Blocks[i].Tool != nil && s.Blocks[i].Tool.Status == ToolRunning {
+			return s.Blocks[i].Tool
+		}
+	}
+	return nil
 }
 
 // TextContent concatenates the run's visible text (used for fallbacks).

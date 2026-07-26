@@ -1,7 +1,9 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"strings"
 
 	"lark-coding-agent-bridge-go/internal/media"
@@ -39,10 +41,10 @@ type promptUserInput struct {
 
 // buildPrompt assembles the agent prompt with bridge_context metadata and
 // the merged user input. Ported from prompt.ts buildAgentPrompt.
-func (b *Bridge) buildPrompt(batch []*Message, attachments []media.Attachment) string {
+func (b *Bridge) buildPrompt(ctx context.Context, batch []*Message, attachments []media.Attachment) string {
 	first := batch[0]
 
-	ctx := promptContext{
+	pc := promptContext{
 		ChatID:     first.ChatID,
 		ChatType:   first.ChatType,
 		SenderID:   first.SenderID,
@@ -53,7 +55,7 @@ func (b *Bridge) buildPrompt(batch []*Message, attachments []media.Attachment) s
 	}
 	mentionsSeen := map[string]bool{}
 	for _, m := range batch {
-		ctx.MessageIDs = append(ctx.MessageIDs, m.MessageID)
+		pc.MessageIDs = append(pc.MessageIDs, m.MessageID)
 		for _, mt := range m.Mentions {
 			key := mt.OpenID
 			if key == "" {
@@ -63,7 +65,24 @@ func (b *Bridge) buildPrompt(batch []*Message, attachments []media.Attachment) s
 				continue
 			}
 			mentionsSeen[key] = true
-			ctx.Mentions = append(ctx.Mentions, promptMention{OpenID: mt.OpenID, Name: mt.Name, IsBot: mt.IsBot})
+			pc.Mentions = append(pc.Mentions, promptMention{OpenID: mt.OpenID, Name: mt.Name, IsBot: mt.IsBot})
+		}
+	}
+
+	// Fetch quoted message content when the user is replying to a message.
+	var quotedSection string
+	if first.ParentID != "" {
+		if msgType, content, err := b.Lark.GetMessage(ctx, first.ParentID); err == nil {
+			quotedText := flattenQuoted(msgType, content)
+			if quotedText != "" {
+				quotedSection = promptSection("quoted_message", map[string]string{
+					"id":      first.ParentID,
+					"type":    msgType,
+					"content": quotedText,
+				}) + "\n\n"
+			}
+		} else {
+			log.Printf("[prompt] GetMessage(%s) failed: %v", first.ParentID, err)
 		}
 	}
 
@@ -92,7 +111,7 @@ func (b *Bridge) buildPrompt(batch []*Message, attachments []media.Attachment) s
 		})
 	}
 
-	return promptSection("bridge_context", ctx) + "\n\n" + promptSection("user_input", input)
+	return promptSection("bridge_context", pc) + "\n\n" + quotedSection + promptSection("user_input", input)
 }
 
 func senderTypeOf(m *Message) string {
@@ -108,6 +127,59 @@ func senderAnnotation(m *Message) string {
 		id = "unknown"
 	}
 	return "[" + id + " (" + senderTypeOf(m) + ")]"
+}
+
+// flattenQuoted extracts readable text from a fetched message's raw content.
+func flattenQuoted(msgType, raw string) string {
+	switch msgType {
+	case "text":
+		var body struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(raw), &body); err == nil {
+			return body.Text
+		}
+	case "post":
+		var doc map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+			return raw
+		}
+		contentRaw, ok := doc["content"]
+		if !ok {
+			for _, lang := range []string{"zh_cn", "en_us", "ja_jp"} {
+				if sub, ok := doc[lang]; ok {
+					var subDoc map[string]json.RawMessage
+					if err := json.Unmarshal(sub, &subDoc); err == nil {
+						if c, ok := subDoc["content"]; ok {
+							contentRaw = c
+							break
+						}
+					}
+				}
+			}
+		}
+		if contentRaw == nil {
+			return raw
+		}
+		var paragraphs [][]struct {
+			Tag  string `json:"tag"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(contentRaw, &paragraphs); err != nil {
+			return raw
+		}
+		var sb strings.Builder
+		for _, para := range paragraphs {
+			for _, el := range para {
+				if el.Tag == "text" {
+					sb.WriteString(el.Text)
+				}
+			}
+			sb.WriteString("\n")
+		}
+		return strings.TrimRight(sb.String(), "\n")
+	}
+	return raw
 }
 
 // promptSection wraps a value in an XML-ish tag with safe JSON inside.

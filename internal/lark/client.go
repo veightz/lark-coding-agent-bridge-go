@@ -142,11 +142,20 @@ func (c *Client) CreateCard(ctx context.Context, card any) (string, error) {
 	return *resp.Data.CardId, nil
 }
 
+// cardRef is the fixed JSON payload for referencing a cardKit card.
+type cardRef struct {
+	Type string      `json:"type"`
+	Data cardRefData `json:"data"`
+}
+type cardRefData struct {
+	CardID string `json:"card_id"`
+}
+
 // SendCardByReference sends an interactive message referencing a card_id.
 func (c *Client) SendCardByReference(ctx context.Context, chatID, cardID, replyTo string) (string, error) {
-	content, _ := json.Marshal(map[string]any{
-		"type": "card",
-		"data": map[string]string{"card_id": cardID},
+	content, _ := json.Marshal(cardRef{
+		Type: "card",
+		Data: cardRefData{CardID: cardID},
 	})
 	if replyTo != "" {
 		resp, err := c.SDK.Im.V1.Message.Reply(ctx, larkim.NewReplyMessageReqBuilder().
@@ -207,12 +216,21 @@ func (c *Client) UpdateCard(ctx context.Context, cardID string, card any, sequen
 	return nil
 }
 
+// cardSettings is the payload for CardKit card.settings (streaming mode etc.).
+type cardSettings struct {
+	Config cardSettingsConfig `json:"config"`
+}
+type cardSettingsConfig struct {
+	StreamingMode bool              `json:"streaming_mode"`
+	Summary       map[string]string `json:"summary"`
+}
+
 // FinishStreamingCard flips streaming_mode off and sets the preview summary.
 func (c *Client) FinishStreamingCard(ctx context.Context, cardID string, sequence int, summary string) error {
-	settings, _ := json.Marshal(map[string]any{
-		"config": map[string]any{
-			"streaming_mode": false,
-			"summary":        map[string]string{"content": summary},
+	settings, _ := json.Marshal(cardSettings{
+		Config: cardSettingsConfig{
+			StreamingMode: false,
+			Summary:       map[string]string{"content": summary},
 		},
 	})
 	resp, err := c.SDK.Cardkit.V1.Card.Settings(ctx, larkcardkit.NewSettingsCardReqBuilder().
@@ -287,6 +305,48 @@ func (c *Client) GetBotInfo(ctx context.Context) (*BotInfo, error) {
 		return nil, apiErr("bot.info", out.Code, out.Msg)
 	}
 	return &BotInfo{OpenID: out.Bot.OpenID, AppName: out.Bot.AppName}, nil
+}
+
+// GetMessage fetches a single message's raw content by ID.
+// Returns the message type, text content, and any error.
+func (c *Client) GetMessage(ctx context.Context, messageID string) (msgType, content string, err error) {
+	token, err := c.tenantAccessToken(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.BaseURL+"/open-apis/im/v1/messages/"+messageID, nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			Items []struct {
+				MessageType string `json:"msg_type"`
+				Body        struct {
+					Content string `json:"content"`
+				} `json:"body"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", "", err
+	}
+	if out.Code != 0 {
+		return "", "", apiErr("message.get", out.Code, out.Msg)
+	}
+	if len(out.Data.Items) == 0 {
+		return "", "", fmt.Errorf("message %s not found", messageID)
+	}
+	return out.Data.Items[0].MessageType, out.Data.Items[0].Body.Content, nil
 }
 
 // GetChatName resolves a chat's display name ("" for p2p chats or errors).

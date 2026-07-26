@@ -82,15 +82,27 @@ func TestRenderCard(t *testing.T) {
 		t.Fatal("no elements")
 	}
 
-	// stop button must be present while running
+	// stop/refresh buttons must be present while running
 	var sawButton bool
 	for _, el := range elements {
 		if el["tag"] == "button" {
 			sawButton = true
 		}
+		if el["tag"] == "column_set" {
+			columns, _ := el["columns"].([]map[string]any)
+			for _, col := range columns {
+				if colEls, _ := col["elements"].([]map[string]any); colEls != nil {
+					for _, ce := range colEls {
+						if ce["tag"] == "button" {
+							sawButton = true
+						}
+					}
+				}
+			}
+		}
 	}
 	if !sawButton {
-		t.Error("no stop button while running")
+		t.Error("no stop/refresh button while running")
 	}
 
 	// email masked in markdown content
@@ -110,6 +122,9 @@ func TestRenderCard(t *testing.T) {
 	for _, el := range doneCard["body"].(map[string]any)["elements"].([]map[string]any) {
 		if el["tag"] == "button" {
 			t.Error("stop button should not render when done")
+		}
+		if el["tag"] == "column_set" {
+			t.Error("action buttons should not render when done")
 		}
 	}
 }

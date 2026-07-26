@@ -71,6 +71,9 @@ type Profile struct {
 		// IdleTimeoutMinutes kills a run whose agent emits nothing for N
 		// minutes (0 → default 10; negative disables the watchdog).
 		IdleTimeoutMinutes int `json:"idleTimeoutMinutes,omitempty"`
+		// AllowAutoReply responds to all group messages without @-mention
+		// (requires "读取群聊全部消息" permission in Lark console).
+		AllowAutoReply bool `json:"allowAutoReply,omitempty"`
 	} `json:"preferences,omitempty"`
 }
 
@@ -80,6 +83,11 @@ func (p *Profile) IdleTimeout() int {
 		return 10
 	}
 	return p.Preferences.IdleTimeoutMinutes
+}
+
+// AutoReplyEnabled reports whether the bot responds without @-mention.
+func (p *Profile) AutoReplyEnabled() bool {
+	return p.Preferences.AllowAutoReply
 }
 
 // DefaultAccess returns the effective access level (full when unset).

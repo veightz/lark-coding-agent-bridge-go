@@ -251,7 +251,7 @@ func validateWorkspace(input string) (string, string) {
 	return dir, ""
 }
 
-// HandleCardAction processes card button callbacks (⏹ stop / 💬 quick reply).
+// HandleCardAction processes card button callbacks (⏹ stop / 🔄 refresh / 💬 quick reply).
 // Returns a toast message for the clicker, or "" for none.
 func (b *Bridge) HandleCardAction(chatID, messageID, operatorID string, value map[string]any) string {
 	cmd, _ := value["cmd"].(string)
@@ -260,16 +260,35 @@ func (b *Bridge) HandleCardAction(chatID, messageID, operatorID string, value ma
 		if b.stopRunByCardMessage(messageID) {
 			return "已停止当前运行"
 		}
-		return "任务已结束"
-	case "quick_reply":
-		if operatorID == "" {
-			return ""
-		}
-		go b.startQuickReply(chatID, messageID, operatorID)
-		return "💬 请查看机器人的私信"
+		return "该任务已结束（bridge 重启或卡片已过期），请发新消息重新开始"
+	case "refresh":
+		return b.handleRefresh(chatID, messageID)
 	default:
 		return ""
 	}
+}
+
+// handleRefresh re-renders the card in its current state with updated
+// elapsed time, giving the user a live status check.
+func (b *Bridge) handleRefresh(chatID, messageID string) string {
+	b.runsMu.Lock()
+	scope, ok := b.cardScopes[messageID]
+	if !ok {
+		b.runsMu.Unlock()
+		return "该任务已结束（bridge 重启或卡片已过期），请发新消息重新开始"
+	}
+	ar, ok := b.runs[scope]
+	b.runsMu.Unlock()
+	if !ok || ar.runState == nil || ar.stream == nil {
+		return "该任务已结束，请发新消息重新开始"
+	}
+	// Push a re-render with up-to-date elapsed time.
+	ar.runState.Stats.DurationMs = time.Since(ar.startTime).Milliseconds()
+	if tool := ar.runState.LastRunningTool(); tool != nil {
+		tool.DurationMs = ar.runState.Stats.DurationMs
+	}
+	ar.stream.Update(card.Render(ar.runState, card.RenderOptions{StopButton: true}))
+	return "🔄 已刷新"
 }
 
 // startQuickReply asks the user to reply in p2p, then routes their text

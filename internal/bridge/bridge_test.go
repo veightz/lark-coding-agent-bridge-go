@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -96,7 +97,7 @@ func TestBuildPrompt(t *testing.T) {
 			Content:   "帮我看下代码",
 		},
 	}
-	prompt := b.buildPrompt(batch, nil)
+	prompt := b.buildPrompt(context.Background(), batch, nil)
 	if !strings.Contains(prompt, "<bridge_context>") || !strings.Contains(prompt, "<user_input>") {
 		t.Errorf("sections missing: %s", prompt)
 	}

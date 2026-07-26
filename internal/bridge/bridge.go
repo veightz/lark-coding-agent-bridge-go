@@ -21,13 +21,17 @@ import (
 	"lark-coding-agent-bridge-go/internal/state"
 )
 
-const debounceMs = 600
-
-// activeRun tracks a running agent invocation for /stop and the stop button.
+// activeRun tracks a running agent invocation for /stop, stop button,
+// and refresh (re-render the card from the current run state).
 type activeRun struct {
-	run   agent.Run
-	scope string
+	run       agent.Run
+	scope     string
+	startTime time.Time
+	runState  *card.RunState
+	stream    *card.Stream
 }
+
+const debounceMs = 600
 
 // pendingReply tracks a quick_reply button click awaiting the user's p2p reply.
 type pendingReply struct {
@@ -143,8 +147,8 @@ func (b *Bridge) HandleMessage(event *larkimEvent) {
 		}
 	}
 
-	// Groups require an @bot mention; DMs don't. @all alone doesn't count.
-	if msg.ChatType != "p2p" && !msg.MentionedBot {
+	// Groups require an @bot mention (unless auto-reply is enabled). @all alone doesn't count.
+	if msg.ChatType != "p2p" && !msg.MentionedBot && !b.Profile.AutoReplyEnabled() {
 		return
 	}
 
@@ -230,7 +234,7 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 	runOpts := agent.RunOptions{
 		RunID:     fmt.Sprintf("%s-%d", scope, time.Now().UnixNano()),
 		Scope:     scope,
-		Prompt:    b.buildPrompt(batch, attachments),
+		Prompt:    b.buildPrompt(ctx, batch, attachments),
 		Cwd:       cwd,
 		Model:     sess.Model,
 		Images:    images,
@@ -244,8 +248,12 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 		return fmt.Errorf("启动 agent 失败: %w", err)
 	}
 
+	startTime := time.Now()
+	stream := card.NewStream(b.Lark, first.ChatID, first.MessageID)
+	runState := card.InitialState()
+
 	b.runsMu.Lock()
-	b.runs[scope] = &activeRun{run: run, scope: scope}
+	b.runs[scope] = &activeRun{run: run, scope: scope, startTime: startTime, runState: runState, stream: stream}
 	b.runsMu.Unlock()
 	defer func() {
 		b.runsMu.Lock()
@@ -253,9 +261,6 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 		b.runsMu.Unlock()
 	}()
 
-	startTime := time.Now()
-	stream := card.NewStream(b.Lark, first.ChatID, first.MessageID)
-	runState := card.InitialState()
 	if err := stream.Start(ctx, card.Render(runState, card.RenderOptions{StopButton: true, GroupChat: first.ChatType != "p2p"})); err != nil {
 		run.Stop()
 		return fmt.Errorf("创建回复卡片失败: %w", err)
@@ -291,6 +296,10 @@ eventLoop:
 				break eventLoop
 			}
 			runState = runState.Reduce(evt)
+			runState.Stats.DurationMs = time.Since(startTime).Milliseconds()
+			if tool := runState.LastRunningTool(); tool != nil {
+				tool.DurationMs = runState.Stats.DurationMs
+			}
 			switch evt.Type {
 			case agent.EventSystem:
 				if evt.SessionID != "" {
@@ -308,6 +317,12 @@ eventLoop:
 				}
 			}
 			stream.Update(card.Render(runState, card.RenderOptions{StopButton: true, GroupChat: first.ChatType != "p2p"}))
+			// Sync runState for card refresh button (HandleCardAction).
+			b.runsMu.Lock()
+			if ar, ok := b.runs[scope]; ok {
+				ar.runState = runState
+			}
+			b.runsMu.Unlock()
 		case <-idleC:
 			// Idle watchdog: the agent emitted nothing for the whole
 			// window — kill the run and annotate the card.

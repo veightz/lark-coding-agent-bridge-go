@@ -4,7 +4,11 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"lark-coding-agent-bridge-go/internal/pricing"
 )
+
+const cnyRate = 7.3 // approximate USD→CNY conversion rate for fallback
 
 const (
 	reasoningMax          = 1500
@@ -68,15 +72,11 @@ func Render(state *RunState, opts RenderOptions) map[string]any {
 
 	if state.Terminal == TerminalRunning {
 		if state.Footer != FooterNone {
-			elements = append(elements, footerStatus(state.Footer))
+			elements = append(elements, footerStatus(state.Footer, state))
 		}
 		if opts.StopButton {
-			elements = append(elements, stopButton())
+			elements = append(elements, actionButtons())
 		}
-	} else if state.Terminal == TerminalDone && opts.GroupChat {
-		// Finished card in a group chat: add quick-reply button so users
-		// don't need to @-mention the bot. Clicks trigger a p2p prompt.
-		elements = append(elements, quickReplyButton())
 	}
 
 	return map[string]any{
@@ -204,6 +204,34 @@ func notationMd(content string) map[string]any {
 	return noteMd(content)
 }
 
+func actionButtons() map[string]any {
+	return map[string]any{
+		"tag":              "column_set",
+		"flex_mode":        "none",
+		"background_style": "default",
+		"columns": []map[string]any{
+			{
+				"tag":            "column",
+				"width":          "weighted",
+				"weight":         1,
+				"vertical_align": "center",
+				"elements": []map[string]any{
+					refreshButton(),
+				},
+			},
+			{
+				"tag":            "column",
+				"width":          "weighted",
+				"weight":         1,
+				"vertical_align": "center",
+				"elements": []map[string]any{
+					stopButton(),
+				},
+			},
+		},
+	}
+}
+
 func stopButton() map[string]any {
 	return map[string]any{
 		"tag":  "button",
@@ -216,25 +244,32 @@ func stopButton() map[string]any {
 	}
 }
 
-func quickReplyButton() map[string]any {
+func refreshButton() map[string]any {
 	return map[string]any{
 		"tag":  "button",
-		"text": map[string]any{"tag": "plain_text", "content": "💬 继续对话"},
-		"type": "primary",
+		"text": map[string]any{"tag": "plain_text", "content": "🔄 刷新"},
+		"type": "default",
 		"behaviors": []map[string]any{{
 			"type":  "callback",
-			"value": map[string]any{"cmd": "quick_reply"},
+			"value": map[string]any{"cmd": "refresh"},
 		}},
 	}
 }
 
-func footerStatus(status FooterStatus) map[string]any {
+func footerStatus(status FooterStatus, state *RunState) map[string]any {
 	text := "✍️ 正在输出"
 	switch status {
 	case FooterThinking:
 		text = "🧠 正在思考"
 	case FooterToolRunning:
 		text = "🧰 正在调用工具"
+		if tool := state.LastRunningTool(); tool != nil {
+			if s := summarizeInput(tool.Name, tool.Input); s != "" {
+				text = "🧰 " + tool.Name + ": " + s
+			} else {
+				text = "🧰 " + tool.Name
+			}
+		}
 	}
 	return noteMd(text)
 }
@@ -259,6 +294,12 @@ func summaryText(state *RunState) string {
 	}
 	switch state.Footer {
 	case FooterToolRunning:
+		if tool := state.LastRunningTool(); tool != nil {
+			if s := summarizeInput(tool.Name, tool.Input); s != "" {
+				return "⏳ " + tool.Name + ": " + s
+			}
+			return "⏳ " + tool.Name
+		}
 		return "正在调用工具"
 	case FooterStreaming:
 		return "正在输出"
@@ -275,11 +316,23 @@ func statsLine(stats *RunStats) map[string]any {
 		} else {
 			parts = append(parts, fmt.Sprintf("🔤 %d token", total))
 		}
-		if stats.CostUSD > 0 {
-			parts = append(parts, fmt.Sprintf("💰 $%.4f", stats.CostUSD))
+		costStr := formatCostCNY(stats)
+		if costStr != "" {
+			parts = append(parts, "💰 "+costStr)
 		}
 	}
 	return noteMd(strings.Join(parts, " · "))
+}
+
+func formatCostCNY(stats *RunStats) string {
+	if stats.CostCNY > 0 {
+		return pricing.FormatCNY(stats.CostCNY)
+	}
+	if stats.CostUSD > 0 {
+		cny := stats.CostUSD * cnyRate
+		return fmt.Sprintf("¥%.4f", cny)
+	}
+	return ""
 }
 
 func formatDuration(ms int64) string {
@@ -304,8 +357,9 @@ func formatRunStats(dur string, stats *RunStats) string {
 		return "已完成 · " + dur
 	}
 	summary := fmt.Sprintf("已完成 · %s · %d token", dur, total)
-	if stats.CostUSD > 0 {
-		summary += fmt.Sprintf(" · $%.4f", stats.CostUSD)
+	costStr := formatCostCNY(stats)
+	if costStr != "" {
+		summary += " · " + costStr
 	}
 	return summary
 }
@@ -339,7 +393,11 @@ func toolBodyMd(tool *ToolEntry) string {
 			parts = append(parts, "**Output**\n```\n"+truncated+"\n```")
 		}
 	} else if tool.Status == ToolRunning {
-		parts = append(parts, "_运行中…_")
+		suffix := ""
+		if tool.DurationMs > 0 {
+			suffix = "（" + formatDuration(tool.DurationMs) + "）"
+		}
+		parts = append(parts, "_运行中…"+suffix+"_")
 	}
 	body := strings.Join(parts, "\n\n")
 	if len(body) <= bodyTotalMax {
