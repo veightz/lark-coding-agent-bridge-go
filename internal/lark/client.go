@@ -65,12 +65,23 @@ func (c *Client) SendText(ctx context.Context, chatID, text, replyTo string) (st
 		}
 		return str(resp.Data.MessageId), nil
 	}
+	return c.createMessage(ctx, "chat_id", chatID, "text", string(content))
+}
+
+// SendDirectText sends a plain text message to a user by open_id (p2p).
+func (c *Client) SendDirectText(ctx context.Context, openID, text string) (string, error) {
+	content, _ := json.Marshal(map[string]string{"text": text})
+	return c.createMessage(ctx, "open_id", openID, "text", string(content))
+}
+
+// createMessage is the shared helper for sending a message with arbitrary receive_id_type.
+func (c *Client) createMessage(ctx context.Context, receiveIDType, receiveID, msgType, content string) (string, error) {
 	resp, err := c.SDK.Im.V1.Message.Create(ctx, larkim.NewCreateMessageReqBuilder().
-		ReceiveIdType("chat_id").
+		ReceiveIdType(receiveIDType).
 		Body(larkim.NewCreateMessageReqBodyBuilder().
-			ReceiveId(chatID).
-			MsgType("text").
-			Content(string(content)).
+			ReceiveId(receiveID).
+			MsgType(msgType).
+			Content(content).
 			Build()).
 		Build())
 	if err != nil {
@@ -80,6 +91,31 @@ func (c *Client) SendText(ctx context.Context, chatID, text, replyTo string) (st
 		return "", apiErr("message.create", resp.Code, resp.Msg)
 	}
 	return str(resp.Data.MessageId), nil
+}
+
+// CreateChat creates a private group chat with the bot as owner and the
+// given users (open_id) invited. Requires the im:chat scope.
+func (c *Client) CreateChat(ctx context.Context, name, description string, inviteOpenIDs []string) (string, error) {
+	resp, err := c.SDK.Im.V1.Chat.Create(ctx, larkim.NewCreateChatReqBuilder().
+		UserIdType("open_id").
+		Body(larkim.NewCreateChatReqBodyBuilder().
+			Name(name).
+			Description(description).
+			ChatMode("group").
+			ChatType("private").
+			UserIdList(inviteOpenIDs).
+			Build()).
+		Build())
+	if err != nil {
+		return "", err
+	}
+	if !resp.Success() {
+		return "", apiErr("chat.create", resp.Code, resp.Msg)
+	}
+	if resp.Data.ChatId == nil {
+		return "", fmt.Errorf("chat.create returned no chat_id")
+	}
+	return *resp.Data.ChatId, nil
 }
 
 // CreateCard instantiates a CardKit 2.0 card entity and returns its card_id.

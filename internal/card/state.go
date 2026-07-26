@@ -64,6 +64,16 @@ const (
 	TerminalIdleTimeout Terminal = "idle_timeout"
 )
 
+// RunStats holds metrics collected during a run.
+type RunStats struct {
+	DurationMs        int64   // wall clock duration in ms
+	InputTokens       int     // prompt tokens
+	OutputTokens      int     // completion tokens
+	CachedInputTokens int     // cached prompt tokens
+	CostUSD           float64 // estimated cost
+	UsageAvailable    bool    // true if any usage data was reported
+}
+
 // RunState is the full presentation state of one agent run.
 type RunState struct {
 	Blocks    []Block
@@ -75,11 +85,12 @@ type RunState struct {
 	Footer   FooterStatus
 	Terminal Terminal
 	ErrorMsg string
+	Stats    RunStats
 }
 
 // InitialState returns the state for a fresh run.
 func InitialState() *RunState {
-	return &RunState{Footer: FooterThinking, Terminal: TerminalRunning}
+	return &RunState{Footer: FooterThinking, Terminal: TerminalRunning, Stats: RunStats{}}
 }
 
 func closeStreamingText(blocks []Block) []Block {
@@ -139,6 +150,13 @@ func (s *RunState) Reduce(evt agent.Event) *RunState {
 				b.Tool = &tool
 			}
 		}
+
+	case agent.EventUsage:
+		next.Stats.InputTokens = evt.InputTokens
+		next.Stats.OutputTokens = evt.OutputTokens
+		next.Stats.CachedInputTokens = evt.CachedInputTokens
+		next.Stats.CostUSD = evt.CostUSD
+		next.Stats.UsageAvailable = true
 
 	case agent.EventError:
 		switch evt.TerminationReason {

@@ -16,6 +16,7 @@ import (
 const helpText = `**可用命令**
 
 - /new, /reset — 清空当前会话，重新开始
+- /new chat [名称] — 新建群聊，自动拉你进群
 - /cd <path> — 切换工作目录（会话重置）
 - /ws list — 列出已保存的工作区
 - /ws save <name> — 把当前目录保存为命名工作区
@@ -52,6 +53,11 @@ func (b *Bridge) handleCommand(msg *Message, content string) {
 
 	switch cmd {
 	case "/new", "/reset":
+		// /new chat [name] — 显式建群（对齐原版 TS）。
+		if cmd == "/new" && len(args) > 0 && args[0] == "chat" {
+			b.handleNewChat(msg, strings.Join(args[1:], " "), reply)
+			return
+		}
 		b.stopRun(scope)
 		b.resetSession(scope)
 		reply("✅ 已开启新会话")
@@ -273,9 +279,8 @@ func (b *Bridge) startQuickReply(groupChatID, cardMessageID, operatorID string) 
 	defer cancel()
 
 	// Tell the user to reply in private chat (no @ needed in p2p).
-	msgID, err := b.Lark.SendText(ctx, operatorID,
-		"💬 你想让机器人做什么？请直接回复这条消息。\n\n回复后我会在群里继续处理。",
-		"")
+	msgID, err := b.Lark.SendDirectText(ctx, operatorID,
+		"💬 你想让机器人做什么？请直接回复这条消息。\n\n回复后我会在群里继续处理。")
 	if err != nil {
 		log.Printf("[quick_reply] send p2p prompt to %s failed: %v", operatorID, err)
 		return
@@ -339,6 +344,7 @@ func (b *Bridge) forwardToGroup(groupChatID, cardMessageID, userOpenID, text str
 		return
 	}
 
+	startTime := time.Now()
 	b.runsMu.Lock()
 	b.runs[scope] = &activeRun{run: run, scope: scope}
 	b.runsMu.Unlock()
@@ -388,6 +394,7 @@ func (b *Bridge) forwardToGroup(groupChatID, cardMessageID, userOpenID, text str
 		stream.Update(card.Render(runState, card.RenderOptions{StopButton: true, GroupChat: true}))
 	}
 
+	runState.Stats.DurationMs = time.Since(startTime).Milliseconds()
 	runState = runState.FinalizeIfRunning()
 	stream.Update(card.Render(runState, card.RenderOptions{GroupChat: true}))
 	stream.Finish(runState.TextContent())

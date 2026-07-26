@@ -178,12 +178,12 @@ func TestOpenCodeTranslate(t *testing.T) {
 		t.Fatalf("reasoning delta: %+v", events)
 	}
 
-	// idle → terminal done
+	// idle → done event, but defers channel close to pollRun
 	events, terminal = srv.translate(ocEventEnvelope{
 		Type:       "session.idle",
 		Properties: map[string]any{"sessionID": "ses_1"},
 	})
-	if !terminal || len(events) != 1 || events[0].Type != EventDone {
+	if terminal || len(events) != 1 || events[0].Type != EventDone {
 		t.Fatalf("idle: %+v terminal=%v", events, terminal)
 	}
 

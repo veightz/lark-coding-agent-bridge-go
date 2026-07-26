@@ -1,6 +1,7 @@
 package card
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -43,6 +44,11 @@ func Render(state *RunState, opts RenderOptions) map[string]any {
 		} else {
 			elements = append(elements, renderToolGroup(group.tools, state.Terminal != TerminalRunning)...)
 		}
+	}
+
+	// Add stats line when run is finished.
+	if state.Terminal != TerminalRunning && state.Stats.DurationMs > 0 {
+		elements = append(elements, statsLine(&state.Stats))
 	}
 
 	switch state.Terminal {
@@ -242,6 +248,13 @@ func summaryText(state *RunState) string {
 	case TerminalError:
 		return "出错"
 	case TerminalDone:
+		if state.Stats.DurationMs > 0 {
+			dur := formatDuration(state.Stats.DurationMs)
+			if state.Stats.UsageAvailable {
+				return formatRunStats(dur, &state.Stats)
+			}
+			return "已完成 · " + dur
+		}
 		return "已完成"
 	}
 	switch state.Footer {
@@ -251,6 +264,50 @@ func summaryText(state *RunState) string {
 		return "正在输出"
 	}
 	return "思考中"
+}
+
+func statsLine(stats *RunStats) map[string]any {
+	parts := []string{"⏱ " + formatDuration(stats.DurationMs)}
+	if stats.UsageAvailable || stats.InputTokens+stats.OutputTokens > 0 {
+		total := stats.InputTokens + stats.OutputTokens
+		if stats.CachedInputTokens > 0 {
+			parts = append(parts, fmt.Sprintf("🔤 %d token (缓存 %d)", total, stats.CachedInputTokens))
+		} else {
+			parts = append(parts, fmt.Sprintf("🔤 %d token", total))
+		}
+		if stats.CostUSD > 0 {
+			parts = append(parts, fmt.Sprintf("💰 $%.4f", stats.CostUSD))
+		}
+	}
+	return noteMd(strings.Join(parts, " · "))
+}
+
+func formatDuration(ms int64) string {
+	switch {
+	case ms < 1000:
+		return fmt.Sprintf("%dms", ms)
+	case ms < 60000:
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
+	default:
+		m := ms / 60000
+		s := (ms % 60000) / 1000
+		if s > 0 {
+			return fmt.Sprintf("%dm%ds", m, s)
+		}
+		return fmt.Sprintf("%dm", m)
+	}
+}
+
+func formatRunStats(dur string, stats *RunStats) string {
+	total := stats.InputTokens + stats.OutputTokens
+	if total == 0 {
+		return "已完成 · " + dur
+	}
+	summary := fmt.Sprintf("已完成 · %s · %d token", dur, total)
+	if stats.CostUSD > 0 {
+		summary += fmt.Sprintf(" · $%.4f", stats.CostUSD)
+	}
+	return summary
 }
 
 // ─── tool body rendering (ported from tool-render.ts) ─────────────

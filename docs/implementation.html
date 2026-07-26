@@ -334,9 +334,11 @@ func translateACPUpdate(u) []Event  // session/update → 统一 Event</code></p
 
 func (b *Bridge) HandleMessage(ctx context.Context, msg *Message)
 // 1. 过滤自己（bot）发出的消息，防自循环
-// 2. 群聊门槛：必须 @bot 才受理（单聊直通）
-// 3. 斜杠命令分流：/new /cd /ws /stop /status /help → commands.go
-// 4. 普通消息 → NormalizeMessage → 投入该 scope 的 PendingQueue
+// 2. 快捷回复路由：点击 💬 按钮后用户的下一条私聊 → forwardToGroup 转回原群
+// 3. 群聊门槛：必须 @bot 才受理（单聊直通）
+// 4. 斜杠命令分流：/new /cd /ws /sessions /bind /stop /status /help → commands.go
+// 5. 私聊任务升级：LooksLikeTask 命中 → escalateP2P 自动建群（group.go，ADR-0006）
+// 6. 普通消息 → NormalizeMessage → 投入该 scope 的 PendingQueue
 
 func (b *Bridge) runBatch(ctx, scope string, msgs []*Message)
 // 防抖窗口收拢的一批消息 → 下载附件（media/）→ buildPrompt →
@@ -382,12 +384,47 @@ func (q *PendingQueue) fire()                // 收拢本批消息 → 触发 ru
 <table>
   <tr><th>命令</th><th>行为</th></tr>
   <tr><td><code>/new</code></td><td>重置当前 scope 会话（常驻型走 <code>SessionResetter</code>，spawn 型清 SessionID）</td></tr>
+  <tr><td><code>/new chat [名称]</code></td><td>显式建群并拉用户入群，私聊收跳转卡片（ADR-0006）</td></tr>
   <tr><td><code>/cd &lt;path&gt;</code></td><td>切换当前 scope 工作目录（写 workspaces.json）</td></tr>
-  <tr><td><code>/ws</code></td><td>查看当前工作区</td></tr>
+  <tr><td><code>/ws list/save/use/remove</code></td><td>命名工作区管理</td></tr>
+  <tr><td><code>/sessions</code></td><td>列出磁盘上已有的 agent CLI 会话（ADR-0005）</td></tr>
+  <tr><td><code>/bind &lt;id&gt; [--force]</code></td><td>把当前聊天绑定到指定会话；已绑定他处时拒绝并告知</td></tr>
+  <tr><td><code>/unbind</code></td><td>解除当前聊天的会话绑定</td></tr>
   <tr><td><code>/stop</code></td><td>中断当前 scope 进行中的 run（各 agent 原生中断）</td></tr>
-  <tr><td><code>/status</code></td><td>报告 WS 监督状态、当前 run、会话与工作区</td></tr>
+  <tr><td><code>/status</code></td><td>报告 profile、agent、工作目录、会话与运行状态</td></tr>
   <tr><td><code>/help</code></td><td>帮助文本</td></tr>
 </table>
+
+<h3>4.6 私聊任务自动建群 <span class="file">internal/bridge/group.go · classify.go</span></h3>
+<pre><code>func LooksLikeTask(content string, hasResources bool) bool      // classify.go
+// 纯启发式任务判定（ADR-0006）：带附件即任务；闲聊短句（完全匹配）排除；
+// 动作关键词（帮我/修复/实现/分析/fix/implement…）命中即任务；≥20 字长消息兜底
+
+type escalation struct { done chan struct{}; groupID string; err error; at time.Time }
+
+func (b *Bridge) escalateP2P(msg *Message) bool
+// HandleMessage 第 5 步。返回 true = 消息已接管：
+// · 15s 窗口（escalationWindow）内已有升级记录 → 等待 esc.done，并入同一群
+// · /bind 绑定过的私聊（Bindings.HasScope）→ 返回 false，尊重绑定不升级
+// · LooksLikeTask 命中 → 登记 escalation，go runEscalation
+
+func (b *Bridge) runEscalation(msg *Message, esc *escalation)
+// Lark.CreateChat（bot 群主 + 拉用户，需 im:chat 权限）→
+// 群欢迎消息（cwd + 任务上下文）→ sendGroupJumpCard（私聊跳转卡片）→
+// pushToGroup：消息改写 ChatID 后入群 scope 的去抖队列，runBatch 自动启动。
+// 建群失败：私聊提示原因 + 消息回退私聊队列直接处理，不丢消息。
+
+func (b *Bridge) sendGroupJumpCard(ctx, p2pChatID, replyTo, groupID, groupName)
+// CardKit 卡片，按钮 behaviors=open_url →
+// https://applink.feishu.cn/client/chat/open?openChatId=&lt;groupID&gt; 一键进群
+
+func (b *Bridge) handleNewChat(msg, name, reply)   // /new chat [名称]：显式建群
+
+// 快捷回复（commands.go）：
+func (b *Bridge) startQuickReply(groupChatID, cardMessageID, operatorID)
+// SendDirectText（receive_id_type=open_id）私信提示 → 登记 pendingReplies[operatorID]
+func (b *Bridge) forwardToGroup(groupChatID, cardMessageID, userOpenID, text)
+// 用户的私聊回复 → 在原群 scope 起新 run（免 @ 限制）</code></pre>
 
 <h2 id="s5"><span class="no">5</span>internal/card —— 流式卡片</h2>
 
@@ -525,13 +562,17 @@ func (e Entry) Alive() bool // kill(pid, 0) 活性探测
 <h3>6.4 Lark 客户端 <span class="file">internal/lark/client.go</span></h3>
 <pre><code>type Client struct { /* oapi-sdk-go v3 lark.Client + cardkit */ }
 
-func (c *Client) SendText(chatID, replyTo, text string) (msgID string, err error)
+func (c *Client) SendText(ctx, chatID, text, replyTo string) (msgID string, err error)
+func (c *Client) SendDirectText(ctx, openID, text string) (msgID, err)   // receive_id_type=open_id 私信
+func (c *Client) CreateChat(ctx, name, desc string, inviteOpenIDs []string) (chatID, err)
+// im.v1.chat.create：bot 为群主的私有群，拉指定用户（需 im:chat 权限，ADR-0006）
 func (c *Client) CreateCard(ctx, cardJSON) (cardID string, err error)     // cardkit card.create
 func (c *Client) SendCardByReference(chatID, replyTo, cardID) (msgID, err)// 按 card_id 发消息
 func (c *Client) UpdateCard(cardID string, seq int, cardJSON) error       // card.update，uuid=u_&lt;cardID&gt;_&lt;seq&gt;
 func (c *Client) FinishStreamingCard(cardID string) error                 // card.settings 关闭流式
 func (c *Client) DownloadResource(msgID, fileKey, dest string) error      // 图片/文件附件 → media/
 func (c *Client) GetBotInfo(ctx) (*BotInfo, error)                        // GET bot/v3/info：探测 + 身份
+func (c *Client) GetChatName(ctx, chatID string) string                   // GET im/v1/chats/{id}（/bind 去重提示用）
 func (c *Client) tenantAccessToken() (string, error)                      // token 缓存与刷新</code></pre>
 
 <footer>

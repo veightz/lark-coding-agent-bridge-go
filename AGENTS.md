@@ -35,11 +35,11 @@ cmd/lark-coding-agent-bridge/   CLI 入口与子命令
 internal/
   onboard/      扫码注册向导（registerApp 协议复刻）
   config/       根配置 + 路径布局（~/.lark-coding-agent-bridge/）
-  state/        会话 / 工作区 JSON 存储
+  state/        会话 / 工作区 / 绑定 JSON 存储
   agent/        四种 agent 适配器 + ACP client（预留）
   lark/         OpenAPI 封装（WS、REST、cardkit、附件）
   card/         运行状态机 + 卡片渲染 + 流式更新
-  bridge/       消息路由、防抖队列、斜杠命令
+  bridge/       消息路由、防抖队列、斜杠命令、私聊任务自动建群（ADR-0006）
   media/        附件下载缓存
   supervisor/   WS 连接监督（探测 + 强制重建）
   registry/     进程注册表（dashboard 数据源）

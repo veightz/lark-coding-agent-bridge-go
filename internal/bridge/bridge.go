@@ -58,6 +58,9 @@ type Bridge struct {
 
 	pendingRepliesMu sync.Mutex
 	pendingReplies   map[string]*pendingReply // operatorID → pending (quick_reply)
+
+	escalationsMu sync.Mutex
+	escalations   map[string]*escalation // p2p chatID → 进行中的建群升级（ADR-0006）
 }
 
 // NewBridge wires the pipeline. Call HandleMessage / HandleCardAction.
@@ -155,6 +158,11 @@ func (b *Bridge) HandleMessage(event *larkimEvent) {
 		return
 	}
 
+	// 私聊里的明确任务：自动建群并把任务转过去（ADR-0006）。
+	if msg.ChatType == "p2p" && b.escalateP2P(msg) {
+		return
+	}
+
 	log.Printf("[intake] chat=%s scope=%s type=%s chars=%d resources=%d",
 		msg.ChatID, msg.Scope(), msg.RawType, len(content), len(msg.Resources))
 	b.pending.Push(msg.Scope(), msg)
@@ -245,6 +253,7 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 		b.runsMu.Unlock()
 	}()
 
+	startTime := time.Now()
 	stream := card.NewStream(b.Lark, first.ChatID, first.MessageID)
 	runState := card.InitialState()
 	if err := stream.Start(ctx, card.Render(runState, card.RenderOptions{StopButton: true, GroupChat: first.ChatType != "p2p"})); err != nil {
@@ -317,6 +326,8 @@ eventLoop:
 		stopped = true // removed by stopRun (or the watchdog) before we finished
 	}
 	b.runsMu.Unlock()
+	// Record duration before finalizing.
+	elapsed := time.Since(startTime).Milliseconds()
 	switch {
 	case idleFired && runState.Terminal == card.TerminalRunning:
 		runState = runState.MarkIdleTimeout()
@@ -325,6 +336,7 @@ eventLoop:
 	default:
 		runState = runState.FinalizeIfRunning()
 	}
+	runState.Stats.DurationMs = elapsed
 	stream.Update(card.Render(runState, card.RenderOptions{GroupChat: first.ChatType != "p2p"}))
 	stream.Finish(summaryOf(runState))
 
@@ -405,10 +417,45 @@ func (b *Bridge) Flush() {
 	}
 }
 
+func formatDuration(ms int64) string {
+	switch {
+	case ms < 1000:
+		return fmt.Sprintf("%dms", ms)
+	case ms < 60000:
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
+	default:
+		m := ms / 60000
+		s := (ms % 60000) / 1000
+		if s > 0 {
+			return fmt.Sprintf("%dm%ds", m, s)
+		}
+		return fmt.Sprintf("%dm", m)
+	}
+}
+
 func summaryOf(state *card.RunState) string {
+	// Use the card summary (duration/tokens) when available,
+	// fall back to text preview for notification display.
 	text := state.TextContent()
 	if text == "" {
 		return ""
 	}
-	return text
+	// Prepend stats if the run has duration info.
+	if state.Stats.DurationMs > 0 {
+		dur := formatDuration(state.Stats.DurationMs)
+		if state.Stats.UsageAvailable || state.Stats.InputTokens+state.Stats.OutputTokens > 0 {
+			total := state.Stats.InputTokens + state.Stats.OutputTokens
+			return fmt.Sprintf("⏱ %s  🔤 %d token  %s", dur, total, truncatePreview(text, 60))
+		}
+		return fmt.Sprintf("⏱ %s  %s", dur, truncatePreview(text, 60))
+	}
+	return truncatePreview(text, 80)
+}
+
+func truncatePreview(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
 }

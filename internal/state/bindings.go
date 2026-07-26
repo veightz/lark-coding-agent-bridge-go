@@ -50,6 +50,18 @@ func SessionKey(kind config.AgentKind, sessionID string) string {
 	return string(kind) + ":" + sessionID
 }
 
+// HasScope reports whether any binding points at the given scope.
+func (b *BindingStore) HasScope(scope string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, bind := range b.BySession {
+		if bind.Scope == scope {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *BindingStore) Get(sessionKey string) (Binding, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

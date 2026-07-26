@@ -447,7 +447,9 @@ func (s *ocServer) translate(env ocEventEnvelope) (events []Event, terminal bool
 		return nil, false
 
 	case "session.idle":
-		return []Event{{Type: EventDone, TerminationReason: TermNormal}}, true
+		// Send EventDone to mark turn completion, but defer channel close
+		// to pollRun so it can extract token/cost from the REST API first.
+		return []Event{{Type: EventDone, TerminationReason: TermNormal}}, false
 
 	case "session.error":
 		errObj, _ := props["error"].(map[string]any)
@@ -587,6 +589,17 @@ func (s *ocServer) consumeEvents(ctx context.Context, directory string) error {
 // session's message list. SSE is the fast path; this is the safety net.
 const pollInterval = 3 * time.Second
 
+// ocTokens mirrors the token usage in message info.
+type ocTokens struct {
+	Input     int `json:"input"`
+	Output    int `json:"output"`
+	Reasoning int `json:"reasoning"`
+	Cache     struct {
+		Read  int `json:"read"`
+		Write int `json:"write"`
+	} `json:"cache"`
+}
+
 // ocMessageEntry mirrors the relevant slice of GET /session/{id}/message.
 type ocMessageEntry struct {
 	Info struct {
@@ -596,7 +609,9 @@ type ocMessageEntry struct {
 			Created   int64 `json:"created"`
 			Completed int64 `json:"completed"`
 		} `json:"time"`
-		Error *struct {
+		Tokens *ocTokens `json:"tokens"`
+		Cost   *float64  `json:"cost"`
+		Error  *struct {
 			Name string         `json:"name"`
 			Data map[string]any `json:"data"`
 		} `json:"error"`
@@ -711,6 +726,19 @@ func reconcilePoll(delivered string, last *ocMessageEntry) (events []Event, term
 	full := last.text()
 	if missing := missingText(delivered, full); missing != "" {
 		events = append(events, Event{Type: EventText, Delta: missing})
+	}
+	// Extract token/cost from the message info.
+	if last.Info.Tokens != nil || (last.Info.Cost != nil && *last.Info.Cost > 0) {
+		usage := Event{Type: EventUsage}
+		if t := last.Info.Tokens; t != nil {
+			usage.InputTokens = t.Input
+			usage.OutputTokens = t.Output
+			usage.CachedInputTokens = t.Cache.Read
+		}
+		if c := last.Info.Cost; c != nil {
+			usage.CostUSD = *c
+		}
+		events = append(events, usage)
 	}
 	if last.Info.Error != nil {
 		name := last.Info.Error.Name
