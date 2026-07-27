@@ -12,10 +12,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -30,6 +34,7 @@ import (
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 
 	"lark-coding-agent-bridge-go/internal/agent"
+	"lark-coding-agent-bridge-go/internal/ask"
 	"lark-coding-agent-bridge-go/internal/bridge"
 	"lark-coding-agent-bridge-go/internal/buildinfo"
 	"lark-coding-agent-bridge-go/internal/config"
@@ -55,6 +60,8 @@ func main() {
 	switch cmd {
 	case "run", "start":
 		err = cmdRun(args)
+	case "hook":
+		err = cmdHook(args)
 	case "dashboard", "ps":
 		err = cmdDashboard()
 	case "upgrade", "update":
@@ -77,6 +84,7 @@ func usage() {
 
 命令:
   run         启动 bot（默认命令）  --profile --agent --workspace --app-id
+  hook        Claude PreToolUse 钩子入口（AskUserQuestion → 飞书卡片）  claude
   dashboard   查看正在运行的 bridge 实例及其版本
   upgrade     从源码仓库拉取最新代码并重建升级  [--check] [--source <dir>]
   version     打印版本信息`)
@@ -139,6 +147,23 @@ func run(profileName, agentKind, workspace, appID string) error {
 		return err
 	}
 
+	// Ask IPC + Claude hook install (ADR-0008). Best-effort: failure only
+	// disables Claude AskUserQuestion takeover, not the whole bridge.
+	askSrv := &ask.Server{Broker: br.Ask, Resolve: br.ResolveScopeRoute}
+	if askURL, aerr := askSrv.StartListen(); aerr != nil {
+		log.Printf("[ask] loopback 服务启动失败: %v", aerr)
+	} else {
+		br.AskURL = askURL
+		defer askSrv.Close()
+		if self, e := os.Executable(); e == nil {
+			if path, ierr := ask.InstallClaudeAskHook(paths, profileName, self); ierr != nil {
+				log.Printf("[ask] 安装 Claude hook 失败: %v", ierr)
+			} else {
+				log.Printf("[ask] Claude AskUserQuestion hook → %s (ipc %s)", path, askURL)
+			}
+		}
+	}
+
 	// Register in the local process registry (dashboard reads this).
 	deregister := registry.Register(paths, profileName, adapter.ID(), br.Workspaces.Get())
 	defer deregister()
@@ -151,13 +176,7 @@ func run(profileName, agentKind, workspace, appID string) error {
 			return nil
 		}).
 		OnP2CardActionTrigger(func(ctx context.Context, event *callback.CardActionTriggerEvent) (*callback.CardActionTriggerResponse, error) {
-			toast := handleCardAction(br, event)
-			if toast == "" {
-				return nil, nil
-			}
-			return &callback.CardActionTriggerResponse{
-				Toast: &callback.Toast{Type: "info", Content: toast},
-			}, nil
+			return handleCardAction(br, event), nil
 		})
 
 	sup := supervisor.New(supervisor.Config{
@@ -198,9 +217,9 @@ func run(profileName, agentKind, workspace, appID string) error {
 	return nil
 }
 
-func handleCardAction(br *bridge.Bridge, event *callback.CardActionTriggerEvent) string {
+func handleCardAction(br *bridge.Bridge, event *callback.CardActionTriggerEvent) *callback.CardActionTriggerResponse {
 	if event == nil || event.Event == nil {
-		return ""
+		return nil
 	}
 	var chatID, messageID, operatorID string
 	var value map[string]any
@@ -214,7 +233,22 @@ func handleCardAction(br *bridge.Bridge, event *callback.CardActionTriggerEvent)
 	if event.Event.Action != nil {
 		value = event.Event.Action.Value
 	}
-	return br.HandleCardAction(chatID, messageID, operatorID, value)
+	res := br.HandleCardAction(chatID, messageID, operatorID, value)
+	if res.Toast == "" && res.Card == nil {
+		return nil
+	}
+	out := &callback.CardActionTriggerResponse{}
+	if res.Toast != "" {
+		kind := res.ToastKind
+		if kind == "" {
+			kind = "info"
+		}
+		out.Toast = &callback.Toast{Type: kind, Content: res.Toast}
+	}
+	if res.Card != nil {
+		out.Card = &callback.Card{Type: "raw", Data: res.Card}
+	}
+	return out
 }
 
 // errMissingProfile returns a clear error when --profile is omitted.
@@ -374,6 +408,73 @@ func injectAgentEnv(adapter agent.Adapter, paths config.Paths, profileName strin
 	case *agent.OpenCodeAdapter:
 		a.Env = env
 	}
+}
+
+// ─── hook (Claude AskUserQuestion → Feishu card, ADR-0008) ────────
+
+// cmdHook is invoked by Claude Code PreToolUse for AskUserQuestion.
+// stdin: hook JSON payload; stdout: allow directive with answers, or empty
+// passthrough when the bridge is unreachable / payload is not our concern.
+func cmdHook(args []string) error {
+	if len(args) == 0 || args[0] != "claude" {
+		return fmt.Errorf("用法: lark-coding-agent-bridge hook claude")
+	}
+	raw, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
+	if err != nil {
+		return err
+	}
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil // passthrough
+	}
+
+	// Non-AskUserQuestion → empty stdout (Claude runs the tool normally).
+	qs, _, err := ask.ParseClaudeHookPayload(raw)
+	if err != nil || qs == nil {
+		return nil
+	}
+
+	askURL := os.Getenv(ask.EnvAskURL)
+	if askURL == "" {
+		// Bridge not running or env not injected — passthrough to terminal.
+		return nil
+	}
+
+	body := map[string]any{
+		"scope":         os.Getenv(ask.EnvAskScope),
+		"chatId":        os.Getenv(ask.EnvAskChatID),
+		"rootMessageId": os.Getenv(ask.EnvAskRootMessageID),
+		"source":        "claude-hook",
+		"timeoutMs":     int((30 * time.Minute) / time.Millisecond),
+		"raw":           json.RawMessage(raw),
+	}
+	payload, _ := json.Marshal(body)
+	client := &http.Client{Timeout: 35 * time.Minute}
+	resp, err := client.Post(strings.TrimRight(askURL, "/")+"/v1/ask", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		// Daemon unreachable → passthrough (botmux 同款降级).
+		return nil
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var parsed struct {
+		Kind      string `json:"kind"`
+		Directive string `json:"directive"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil
+	}
+	if parsed.Kind == "passthrough" || parsed.Directive == "" {
+		return nil
+	}
+	_, _ = os.Stdout.WriteString(parsed.Directive)
+	if !strings.HasSuffix(parsed.Directive, "\n") {
+		_, _ = os.Stdout.WriteString("\n")
+	}
+	return nil
 }
 
 // ─── dashboard ─────────────────────────────────────────────────────

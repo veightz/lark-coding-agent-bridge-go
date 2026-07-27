@@ -63,6 +63,7 @@
     <li><a href="#s2">internal/agent —— 适配层核心</a></li>
     <li><a href="#s3">internal/agent —— 四个适配器实现</a></li>
     <li><a href="#s4">internal/bridge —— 消息中枢</a></li>
+    <li><a href="#s4b">internal/ask —— 模型反问（ADR-0008）</a></li>
     <li><a href="#s5">internal/card —— 流式卡片</a></li>
     <li><a href="#s6">internal/supervisor / registry / upgrade / lark</a></li>
   </ol>
@@ -149,7 +150,7 @@
 
 <h3>2.1 统一抽象 <span class="file">internal/agent/types.go</span></h3>
 <pre><code>type EventType string
-// system | text | thinking | tool_use | tool_result | usage | done | error
+// system | text | thinking | tool_use | tool_result | ask_user | usage | done | error
 
 type TerminationReason string
 // completed | interrupted | idle_timeout | error ...
@@ -353,9 +354,26 @@ func (b *Bridge) stopRun(scope string)           // /stop：调 Run.Stop()
 func (b *Bridge) stopRunByCardMessage(msgID)     // 卡片 ⏹ 按钮 callback（cmd=stop）按卡片消息定位 run
 
 // idle 看门狗：每个 run 一个 select 循环
-//   case evt := &lt;-run.Events():   刷新计时、驱动卡片
+//   case evt := &lt;-run.Events():   刷新计时、驱动卡片；EventAskUser → handleAskUser 阻塞到用户作答
 //   case &lt;-time.After(idleTimeout): run.Stop() + 卡片标注「⏱ 长时间无响应，已自动终止」
-//   超时 = preferences.idleTimeoutMinutes（0=默认 10 分钟，负值关闭）</code></pre>
+//   超时 = preferences.idleTimeoutMinutes（0=默认 10 分钟，负值关闭）；pending ask 时暂停 idle
+//
+// Ask 接线（ADR-0008）：Ask *ask.Broker、AskURL loopback、scopeRoutes；
+// HandleCardAction 识别 ask_select / ask_toggle / ask_submit</code></pre>
+
+<h2 id="s4b"><span class="no">4b</span>internal/ask —— 模型反问（ADR-0008，对标 botmux）</h2>
+<pre><code>// types + broker：Register / Toggle / Select / Submit / InvalidateScope
+// card.BuildCard → CardKit 2.0 交互卡（单选即答 / 多选 toggle+submit）
+// format：ParseClaudeHookPayload / FormatClaudeAnswer / ParseOpenCodeQuestions
+// server：POST /v1/ask（Claude hook 阻塞等待） GET /health
+// hook_install：profile 目录 claude-settings.json PreToolUse matcher=AskUserQuestion
+
+// Claude：run 注入 LARK_BRIDGE_* + --settings；子命令 `hook claude` 读 stdin → POST /v1/ask → stdout directive
+// OpenCode：SSE question.asked → EventAskUser → bridge.handleAskUser → POST /question/{id}/reply
+// Pi：RPC extension_ui_request (select/confirm/input/editor) → EventAskUser → extension_ui_response
+//     input/editor 支持聊天文字 freeform（SubmitComment / tryAnswerAskWithText）
+// Codex：无结构化反问 hook（passthrough）</code></pre>
+<p>设计对照：botmux <code>src/core/ask-broker.ts</code> / <code>src/im/lark/ask-card.ts</code> / <code>docs/TEST-GUIDE-ask-hooks.md</code>。</p>
 
 <h3>4.2 防抖合并队列 <span class="file">internal/bridge/queue.go</span></h3>
 <pre><code>type PendingQueue struct { /* 每 scope 一个；600ms 防抖窗口 */ }

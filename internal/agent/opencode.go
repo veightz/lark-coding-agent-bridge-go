@@ -379,6 +379,35 @@ func (s *ocServer) dispatch(env ocEventEnvelope) {
 	}
 	s.mu.Lock()
 	runs := s.runs[sessionID]
+	// Bind AskUser reply closures to each run's working directory so
+	// POST /question/{id}/reply hits the correct OpenCode worktree instance.
+	for i := range events {
+		if events[i].Type != EventAskUser || events[i].AskID == "" {
+			continue
+		}
+		qid := events[i].AskID
+		events[i].Reply = func(answers [][]string, cancelled bool) error {
+			// Prefer the directory of any live run for this session.
+			s.mu.Lock()
+			dir := ""
+			for _, run := range s.runs[sessionID] {
+				if run != nil && run.directory != "" {
+					dir = run.directory
+					break
+				}
+			}
+			s.mu.Unlock()
+			// On cancel/timeout still reply with empty labels so OpenCode unblocks.
+			if cancelled && len(answers) == 0 {
+				answers = [][]string{{""}}
+			}
+			path := "/question/" + qid + "/reply"
+			if dir != "" {
+				path += "?directory=" + urlQueryEscape(dir)
+			}
+			return s.postJSON(path, map[string]any{"answers": answers}, nil)
+		}
+	}
 	for id, run := range runs {
 		for _, evt := range events {
 			safeSend(run.events, evt)
@@ -448,6 +477,21 @@ func (s *ocServer) translate(env ocEventEnvelope) (events []Event, terminal bool
 			return []Event{{Type: EventToolResult, ID: callID, Output: out, IsError: status == "error"}}, false
 		}
 		return nil, false
+
+	case "question.asked":
+		// OpenCode native question tool — bridge shows a Feishu card and
+		// replies via POST /question/{id}/reply (ADR-0008). Reply is bound
+		// in dispatch() with the run's directory.
+		qid, questions := parseOCQuestions(props)
+		if qid == "" || len(questions) == 0 {
+			return nil, false
+		}
+		return []Event{{
+			Type:      EventAskUser,
+			AskID:     qid,
+			Questions: questions,
+			Source:    "opencode",
+		}}, false
 
 	case "session.idle":
 		// Send EventDone to mark turn completion, but defer channel close
@@ -812,6 +856,49 @@ func (a *OpenCodeAdapter) ListSessions(limit int) ([]ExternalSession, error) {
 		})
 	}
 	return out, nil
+}
+
+// parseOCQuestions normalizes OpenCode question.asked properties into
+// bridge AskQuestion values.
+func parseOCQuestions(props map[string]any) (id string, questions []AskQuestion) {
+	id, _ = props["id"].(string)
+	if id == "" {
+		id, _ = props["questionID"].(string)
+	}
+	rawList, _ := props["questions"].([]any)
+	for _, item := range rawList {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		prompt, _ := m["question"].(string)
+		if prompt == "" {
+			prompt, _ = m["header"].(string)
+		}
+		multi, _ := m["multiple"].(bool)
+		if !multi {
+			multi, _ = m["multiSelect"].(bool)
+		}
+		var opts []AskOption
+		if arr, ok := m["options"].([]any); ok {
+			for _, o := range arr {
+				om, ok := o.(map[string]any)
+				if !ok {
+					continue
+				}
+				label, _ := om["label"].(string)
+				if label == "" {
+					continue
+				}
+				opts = append(opts, AskOption{Key: label, Label: label})
+			}
+		}
+		if prompt == "" || len(opts) == 0 {
+			continue
+		}
+		questions = append(questions, AskQuestion{Prompt: prompt, Options: opts, MultiSelect: multi})
+	}
+	return id, questions
 }
 
 // ─── ocRun ─────────────────────────────────────────────────────────

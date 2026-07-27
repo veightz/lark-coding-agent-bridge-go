@@ -201,11 +201,17 @@ func (ps *piSession) kill() {
 
 // send writes one JSONL command; when wantResponse, waits for the
 // correlated response (command acceptance, not run completion).
+//
+// For extension_ui_response the caller's id must be preserved (matches the
+// extension_ui_request). Only assign a synthetic req-N id when absent.
 func (ps *piSession) send(cmd map[string]any, wantResponse bool) (piResponse, error) {
 	ps.mu.Lock()
-	ps.reqSeq++
-	id := fmt.Sprintf("req-%d", ps.reqSeq)
-	cmd["id"] = id
+	id, _ := cmd["id"].(string)
+	if id == "" {
+		ps.reqSeq++
+		id = fmt.Sprintf("req-%d", ps.reqSeq)
+		cmd["id"] = id
+	}
 	var ch chan piResponse
 	if wantResponse {
 		ch = make(chan piResponse, 1)
@@ -294,7 +300,19 @@ func (ps *piSession) readLoop(stdout io.Reader) {
 			continue
 		}
 
-		events := translatePiEvent(raw)
+		// Dialog UI requests need a Reply bound to this session (stdin write).
+		var events []Event
+		if typ == "extension_ui_request" {
+			method := stringField(raw, "method")
+			switch method {
+			case "select", "confirm", "input", "editor":
+				events = ps.translatePiUIRequest(raw)
+			default:
+				events = translatePiEvent(raw)
+			}
+		} else {
+			events = translatePiEvent(raw)
+		}
 		if len(events) == 0 {
 			continue
 		}
@@ -419,6 +437,7 @@ func (r *piRun) WaitExit(timeoutMs int) bool { return true }
 // ─── pi event translation ──────────────────────────────────────────
 
 // translatePiEvent converts one RPC stdout object into AgentEvents.
+// Dialog extension_ui_request events are built in readLoop (need session for Reply).
 func translatePiEvent(raw map[string]any) []Event {
 	typ, _ := raw["type"].(string)
 	switch typ {
@@ -454,10 +473,159 @@ func translatePiEvent(raw map[string]any) []Event {
 			output = extractTextContent(result["content"])
 		}
 		return []Event{{Type: EventToolResult, ID: stringField(raw, "toolCallId"), Output: output, IsError: isErr}}
+	case "extension_ui_request":
+		// Dialog methods handled in readLoop with a bound Reply; fire-and-forget
+		// methods become a short system note so the run card still shows them.
+		method := stringField(raw, "method")
+		switch method {
+		case "notify":
+			msg := stringField(raw, "message")
+			if msg == "" {
+				return nil
+			}
+			kind := stringField(raw, "notifyType")
+			if kind != "" && kind != "info" {
+				msg = "[" + kind + "] " + msg
+			}
+			return []Event{{Type: EventText, Delta: msg + "\n"}}
+		case "select", "confirm", "input", "editor":
+			return nil // handled in readLoop
+		default:
+			// setStatus / setWidget / setTitle / set_editor_text: ignore
+			return nil
+		}
 	case "agent_settled":
 		return []Event{{Type: EventDone, TerminationReason: TermNormal}}
 	}
 	return nil
+}
+
+// translatePiUIRequest maps pi extension UI dialogs onto EventAskUser.
+// Reply writes extension_ui_response back to the RPC process.
+func (ps *piSession) translatePiUIRequest(raw map[string]any) []Event {
+	method := stringField(raw, "method")
+	id := stringField(raw, "id")
+	if id == "" {
+		return nil
+	}
+	var questions []AskQuestion
+	freeform := false
+	switch method {
+	case "select":
+		title := stringField(raw, "title")
+		optsRaw, _ := raw["options"].([]any)
+		var opts []AskOption
+		for _, o := range optsRaw {
+			label, _ := o.(string)
+			if label == "" {
+				continue
+			}
+			opts = append(opts, AskOption{Key: label, Label: label})
+		}
+		if len(opts) == 0 {
+			return nil
+		}
+		questions = []AskQuestion{{Prompt: title, Options: opts}}
+	case "confirm":
+		title := stringField(raw, "title")
+		msg := stringField(raw, "message")
+		prompt := title
+		if msg != "" {
+			if prompt != "" {
+				prompt += "\n" + msg
+			} else {
+				prompt = msg
+			}
+		}
+		if prompt == "" {
+			prompt = "请确认"
+		}
+		questions = []AskQuestion{{
+			Prompt: prompt,
+			Options: []AskOption{
+				{Key: "yes", Label: "确认"},
+				{Key: "no", Label: "取消"},
+			},
+		}}
+	case "input", "editor":
+		title := stringField(raw, "title")
+		if title == "" {
+			title = "请输入"
+		}
+		extra := ""
+		if method == "input" {
+			if ph := stringField(raw, "placeholder"); ph != "" {
+				extra = "\n（占位：" + ph + "）"
+			}
+		} else if pre := stringField(raw, "prefill"); pre != "" {
+			extra = "\n\n预填内容：\n```\n" + truncateRunes(pre, 500) + "\n```"
+		}
+		questions = []AskQuestion{{
+			Prompt: title + extra + "\n\n请在聊天中直接回复文字作答，或点「取消」。",
+			Options: []AskOption{
+				{Key: "__cancel__", Label: "取消"},
+			},
+		}}
+		freeform = true
+	default:
+		return nil
+	}
+
+	return []Event{{
+		Type:      EventAskUser,
+		AskID:     id,
+		Questions: questions,
+		Freeform:  freeform,
+		Source:    "pi",
+		Reply: func(answers [][]string, cancelled bool) error {
+			return ps.replyExtensionUI(id, method, answers, cancelled)
+		},
+	}}
+}
+
+// replyExtensionUI writes the matching extension_ui_response to pi stdin.
+func (ps *piSession) replyExtensionUI(id, method string, answers [][]string, cancelled bool) error {
+	cmd := map[string]any{
+		"type": "extension_ui_response",
+		"id":   id,
+	}
+	if cancelled {
+		cmd["cancelled"] = true
+	} else {
+		switch method {
+		case "confirm":
+			// yes → true; no / empty → false (pi treats false like cancel for confirm)
+			confirmed := false
+			if len(answers) > 0 && len(answers[0]) > 0 {
+				k := answers[0][0]
+				confirmed = k == "yes" || k == "确认" || k == "true"
+			}
+			cmd["confirmed"] = confirmed
+		case "select", "input", "editor":
+			val := ""
+			if len(answers) > 0 && len(answers[0]) > 0 {
+				val = answers[0][0]
+			}
+			if val == "__cancel__" {
+				cmd["cancelled"] = true
+			} else {
+				cmd["value"] = val
+			}
+		default:
+			cmd["cancelled"] = true
+		}
+	}
+	// Fire-and-forget write (no response correlation for extension_ui_response).
+	_, err := ps.send(cmd, false)
+	return err
+}
+
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
 }
 
 // extractTextContent flattens pi's [{type:"text",text:...}] content arrays.

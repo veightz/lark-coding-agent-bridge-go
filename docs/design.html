@@ -85,9 +85,11 @@
   <li><b>多 profile</b>：配置与会话/工作区隔离存储在 <code>~/.lark-coding-agent-bridge/</code> 下。</li>
   <li><b>四种 agent 适配器</b>：spawn-per-message（claude、codex）与常驻进程（pi RPC、opencode HTTP+SSE）两类形态，统一为同一事件流抽象。</li>
   <li><b>流式卡片</b>：CardKit 2.0，400ms 节流全卡更新，飞书客户端呈现打字机效果。</li>
+  <li><b>模型反问卡片</b>（ADR-0008，对标 <a href="https://github.com/deepcoldy/botmux">botmux</a>）：Claude <code>AskUserQuestion</code> / OpenCode <code>question</code> / Pi <code>extension_ui_request</code> 在飞书弹出交互卡片，用户点选（input/editor 可文字 freeform）后回填 agent；pending ask 期间暂停 idle 看门狗。</li>
   <li><b>三层健壮性</b>：SDK 重连 + supervisor 半死连接检测 + run 级 idle 看门狗；opencode 另加 SSE 帧看门狗（75s 无帧强制重连）与 3s 轮询回补（以服务端消息列表对账，丢帧文本自动补回）。</li>
   <li><b>运维闭环</b>：进程注册表 + dashboard + 自升级。</li>
 </ul>
+<p>重点学习参考：<a href="https://github.com/deepcoldy/botmux">deepcoldy/botmux</a>（ask-broker / ask-card / hook 链路）；原版起点 <a href="https://github.com/zarazhangrui/lark-coding-agent-bridge">lark-channel-bridge</a>。</p>
 
 <h2 id="s2"><span class="no">2</span>总体架构</h2>
 <p>单一二进制 <code>cmd/lark-coding-agent-bridge</code> 提供 <code>run</code> / <code>dashboard</code> / <code>upgrade</code> / <code>version</code> 四个子命令。<code>run</code> 启动桥接主循环：通过 WS 长连接接收飞书事件，消息经归一化、防抖合并后驱动 agent 运行，运行事件流经状态机归约渲染为卡片，再经节流后通过 CardKit API 推回飞书。</p>

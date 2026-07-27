@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"strings"
-	"unicode/utf8"
 )
 
 // 私聊任务判定（ADR-0006）：用户在私聊里发出「明确的任务」时，
@@ -35,15 +34,18 @@ var smalltalk = map[string]bool{
 	"谢谢": true, "感谢": true, "好的": true, "好": true,
 	"嗯": true, "嗯嗯": true, "收到": true, "了解": true,
 	"哈哈": true, "早": true, "早上好": true, "晚安": true,
-	"测试": true, "test": true,
+	"测试": true, "test": true, "都可以": true,
 }
 
-// longMessageRunes 超过这个长度的私聊消息直接视为任务（长消息通常
-// 携带具体诉求或上下文）。
-const longMessageRunes = 20
-
 // LooksLikeTask 报告一条私聊消息是否像「明确的任务」。
-// hasResources 为 true（带图片/文件）时直接判定为任务。
+// 仅在用户表达出可识别的任务意图时返回 true，避免闲聊/联调话术误建群。
+//
+// 规则（从严，误判为闲聊优于误建群，见 ADR-0009）：
+//  1. 带附件 → 任务
+//  2. 空文本 → 非任务
+//  3. 完全匹配的闲聊短句 → 非任务
+//  4. 命中动作关键词 → 任务
+//  5. 其余一律不建群（不再用「≥N 字」兜底）
 func LooksLikeTask(content string, hasResources bool) bool {
 	if hasResources {
 		return true
@@ -56,7 +58,8 @@ func LooksLikeTask(content string, hasResources bool) bool {
 
 	// 完全匹配的闲聊短句优先（即使含动作词，如「谢谢」不该建群）。
 	squashed := strings.NewReplacer(" ", "", "!", "", "！", "",
-		"?", "", "？", "", "。", "", "~", "", "～", "", ",", "", "，", "").Replace(lower)
+		"?", "", "？", "", "。", "", "~", "", "～", "", ",", "", "，", "",
+		"。", "", "、", "", "…", "", ".", "", ";", "", "；", "").Replace(lower)
 	if smalltalk[squashed] {
 		return false
 	}
@@ -65,5 +68,5 @@ func LooksLikeTask(content string, hasResources bool) bool {
 			return true
 		}
 	}
-	return utf8.RuneCountInString(text) >= longMessageRunes
+	return false
 }

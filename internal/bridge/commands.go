@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"lark-coding-agent-bridge-go/internal/agent"
+	"lark-coding-agent-bridge-go/internal/ask"
 	"lark-coding-agent-bridge-go/internal/card"
 	"lark-coding-agent-bridge-go/internal/state"
 )
@@ -255,20 +256,29 @@ func validateWorkspace(input string) (string, string) {
 	return dir, ""
 }
 
-// HandleCardAction processes card button callbacks (⏹ stop / 🔄 refresh / 💬 quick reply).
-// Returns a toast message for the clicker, or "" for none.
-func (b *Bridge) HandleCardAction(chatID, messageID, operatorID string, value map[string]any) string {
+// CardActionResult is the Feishu card.action.trigger response payload.
+type CardActionResult struct {
+	ToastKind string         // info | success | warning | error
+	Toast     string         // empty = no toast
+	Card      map[string]any // optional full card replace (ask settle / toggle)
+}
+
+// HandleCardAction processes card button callbacks (⏹ stop / 🔄 refresh / ask_*).
+func (b *Bridge) HandleCardAction(chatID, messageID, operatorID string, value map[string]any) CardActionResult {
 	cmd, _ := value["cmd"].(string)
 	switch cmd {
 	case "stop":
 		if b.stopRunByCardMessage(messageID) {
-			return "已停止当前运行"
+			return CardActionResult{ToastKind: "info", Toast: "已停止当前运行"}
 		}
-		return "该任务已结束（bridge 重启或卡片已过期），请发新消息重新开始"
+		return CardActionResult{ToastKind: "info", Toast: "该任务已结束（bridge 重启或卡片已过期），请发新消息重新开始"}
 	case "refresh":
-		return b.handleRefresh(chatID, messageID)
+		return CardActionResult{ToastKind: "info", Toast: b.handleRefresh(chatID, messageID)}
+	case ask.ActionSelect, ask.ActionToggle, ask.ActionSubmit:
+		kind, toast, card := b.HandleAskCardAction(operatorID, value)
+		return CardActionResult{ToastKind: kind, Toast: toast, Card: card}
 	default:
-		return ""
+		return CardActionResult{}
 	}
 }
 

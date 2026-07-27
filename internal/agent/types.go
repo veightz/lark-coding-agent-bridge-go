@@ -14,10 +14,30 @@ const (
 	EventThinking   EventType = "thinking"
 	EventToolUse    EventType = "tool_use"
 	EventToolResult EventType = "tool_result"
+	EventAskUser    EventType = "ask_user" // agent needs a human choice (ADR-0008)
 	EventUsage      EventType = "usage"
 	EventDone       EventType = "done"
 	EventError      EventType = "error"
 )
+
+// AskOption is one choice on an EventAskUser card.
+type AskOption struct {
+	Key   string
+	Label string
+}
+
+// AskQuestion is one structured question from the agent.
+type AskQuestion struct {
+	Prompt      string
+	Options     []AskOption
+	MultiSelect bool
+}
+
+// AskReplyFunc delivers the user's answers back to the agent runtime
+// (e.g. OpenCode POST /question/{id}/reply, pi extension_ui_response).
+// cancelled is true on timeout / invalidate / user cancel.
+// Called once by the bridge.
+type AskReplyFunc func(answers [][]string, cancelled bool) error
 
 // TerminationReason explains why a run ended.
 type TerminationReason string
@@ -52,6 +72,17 @@ type Event struct {
 	Output  string
 	IsError bool
 
+	// ask_user (ADR-0008)
+	AskID     string
+	Questions []AskQuestion
+	// Freeform allows the user to answer by typing in chat (pi input/editor).
+	Freeform bool
+	// Source tags the origin for card chrome ("opencode" | "pi" | …).
+	Source string
+	// Reply posts the chosen answers back into the agent (in-process only).
+	// Nil for hook-originated asks handled outside the event stream.
+	Reply AskReplyFunc
+
 	// usage
 	InputTokens           int
 	OutputTokens          int
@@ -76,6 +107,11 @@ type RunOptions struct {
 	Images      []string
 	Access      config.AccessLevel
 	StopGraceMs int
+	// Env is merged on top of the adapter's base Env for this run
+	// (ask routing: LARK_BRIDGE_* for Claude hooks).
+	Env map[string]string
+	// ExtraArgs are appended to the CLI argv (e.g. claude --settings).
+	ExtraArgs []string
 }
 
 // Run is a live agent invocation.

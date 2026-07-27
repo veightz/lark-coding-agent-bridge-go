@@ -6,6 +6,14 @@
 
 飞书/Lark ↔ 本地 coding agent CLI 的桥接器（Go）。把聊天消息路由到本地 agent（claude / codex / pi / opencode），回复以 CardKit 流式卡片实时呈现。是 TS 项目 [lark-channel-bridge](https://github.com/zarazhangrui/lark-coding-agent-bridge) 的 Go 复刻增强版。
 
+## 重点学习参考
+
+- **[deepcoldy/botmux](https://github.com/deepcoldy/botmux)**（**首选对照**）：飞书遥控 AI 编程 CLI 的成熟实现。本仓库在以下能力上重点对齐其设计与语义，而非照搬进程模型：
+  - **模型反问接管**：Claude `AskUserQuestion` / OpenCode `question` / Pi `extension_ui_request` → 飞书交互卡片 → 用户点选（或文字 freeform）后回填 agent（见 ADR-0008、`internal/ask`，对照 botmux `ask-broker` / `ask-card` / hook-installer）。
+  - 卡片回调、超时 settle、daemon 不可达时 passthrough 降级等产品细节。
+  - 文档入口：botmux README、`docs/TEST-GUIDE-ask-hooks.md`、源码 `src/core/ask-*.ts`、`src/im/lark/ask-card.ts`。
+- [lark-channel-bridge](https://github.com/zarazhangrui/lark-coding-agent-bridge)：原版 TS 桥接器（多 profile、流式卡片、命令体系的起点）。
+
 ## 工作模式：设计驱动开发（Design-Driven Development）
 
 本仓库按 **设计 → 实现 → 测试** 的循环推进，设计沉淀在仓库里而非任何 agent 的记忆里：
@@ -37,9 +45,10 @@ internal/
   config/       根配置 + 路径布局（~/.lark-coding-agent-bridge/）
   state/        会话 / 工作区 / 绑定 JSON 存储
   agent/        四种 agent 适配器 + ACP client（预留）
+  ask/          模型反问 broker + 飞书 ask 卡片 + Claude hook IPC（ADR-0008，对标 botmux）
   lark/         OpenAPI 封装（WS、REST、cardkit、附件）
   card/         运行状态机 + 卡片渲染 + 流式更新
-  bridge/       消息路由、防抖队列、斜杠命令、私聊任务自动建群（ADR-0006）
+  bridge/       消息路由、防抖队列、斜杠命令、私聊任务自动建群（ADR-0006）、ask 接线
   media/        附件下载缓存
   supervisor/   WS 连接监督（探测 + 强制重建）
   registry/     进程注册表（dashboard 数据源）
@@ -62,4 +71,6 @@ docs/
 
 ## 当前未实现（不要误以为是 bug）
 
-后台服务管理、访问控制（/invite）、云文档评论、COT 消息、/resume、/config 卡片、secrets 加密。详见 `docs/adr/` 与 README「与原版的差异」。
+后台服务管理、访问控制（/invite）、云文档评论、COT 消息、/resume、/config 卡片、secrets 加密；
+Codex 无结构化反问 hook（与 botmux 一致）；Pi 的 notify/setStatus 等 fire-and-forget UI 不弹卡；工具级权限审批卡（Bash 是否执行）仍走 access mode，不做飞书审批卡。
+详见 `docs/adr/` 与 README「与原版的差异」。

@@ -2,6 +2,7 @@
 
 - 状态: accepted
 - 日期: 2026-07-26
+- > 长度兜底规则已被 [ADR-0009](0009-stricter-p2p-task-classification.md) 取代（仅附件/动作关键词算任务）
 
 ## 背景（Context）
 
@@ -26,8 +27,8 @@
 
 - **判定**：`LooksLikeTask(content, hasResources)`（`classify.go`）——
   纯启发式：带附件即任务；完全匹配的闲聊短句（你好/在吗/谢谢…）不建群；
-  命中动作关键词（帮我/修复/实现/分析/fix/implement/…）即任务；
-  ≥20 字的长消息兜底算任务。规则集中一处、表驱动单测、可调优。
+  命中动作关键词（帮我/修复/实现/分析/fix/implement/…）即任务。
+  ~~≥20 字长消息兜底~~ 已由 ADR-0009 取消（误建群代价过高）。
 - **升级流程**（`group.go`）：建群（bot 为群主，拉用户，`im:chat` 权限）
   → 私聊发跳转卡片（CardKit 按钮 `open_url` 行为，
   `https://applink.feishu.cn/client/chat/open?openChatId=<id>`）

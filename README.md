@@ -2,6 +2,20 @@
 
 [zarazhangrui/lark-coding-agent-bridge](https://github.com/zarazhangrui/lark-coding-agent-bridge)（npm 包名 `lark-channel-bridge`）的 **Go 语言复刻增强版**：把飞书 / Lark 消息桥接到本地 coding agent（**Claude Code / Codex CLI / pi / opencode**）。扫码绑定 PersonalAgent 应用后，即可在聊天里直接驱动本地 coding agent。
 
+### 重点学习参考
+
+实现与产品语义上，**优先对照** [deepcoldy/botmux](https://github.com/deepcoldy/botmux)（飞书遥控 AI 编程 CLI）。尤其是：
+
+| 能力 | botmux 参考 | 本仓库落点 |
+| --- | --- | --- |
+| 模型反问 → 飞书卡片 | `ask-broker` / `ask-card` / hook-installer | `internal/ask` + ADR-0008 |
+| Claude `AskUserQuestion` | PreToolUse hook + IPC | `hook claude` + profile `claude-settings.json` |
+| OpenCode `question` | 插件转 hook | 适配器直接消费 SSE `question.asked` |
+| Pi Extension UI | （botmux 走 TUI，本仓库用 RPC） | `extension_ui_request` → 卡片 → `extension_ui_response` |
+| 降级 | daemon 不可达 passthrough | 同语义（空 stdout / 不 reply / cancelled） |
+
+原版起点仍是 [lark-channel-bridge](https://github.com/zarazhangrui/lark-coding-agent-bridge)。
+
 ## 功能
 
 - **消息桥接**：私聊直接发消息，群里 `@bot`，消息转发给本地 agent。
@@ -16,14 +30,15 @@
 - **三层健壮性**：SDK 自动重连 + supervisor 存活探测强制重建（半死连接自愈）+ run 级 idle 看门狗（默认 10 分钟无事件自动终止并标注卡片）。
 - **多工作区**：`/cd` 切换目录，`/ws` 保存 / 复用命名工作区。
 - **图片和文件**：直接发给 bot，自动下载本地并附上路径（pi 走 base64 内嵌，opencode 走 file part）。
+- **模型反问卡片**（ADR-0008）：Claude `AskUserQuestion` / OpenCode `question` / Pi `extension_ui_request` 在飞书弹出交互卡片，点选（或文字 freeform）后 agent 继续（对标 botmux ask 链路）。
 - **扫码向导**：首次运行终端渲染二维码创建 / 绑定 PersonalAgent 应用（复刻 registerApp 协议），也支持 `--app-id`。
-- **多 profile**：独立凭证、会话、工作区与媒体缓存（`--profile`）。
+- **多 profile**：独立凭证、会话、工作区与媒体缓存（`--profile` 必填）。
 - **dashboard**：查看本机所有运行中的 bridge 实例及版本（区分发布版 / 开发分支构建）。
 - **upgrade**：从源码仓库 `git pull --ff-only` + 重建 + 原子替换二进制。
 
 ## 与原版的差异
 
-本复刻覆盖核心链路，以下原版功能**尚未实现**：后台守护进程服务管理、访问控制（`/invite` 等）、云文档评论、COT 过程消息、`/resume`、`/config` 交互卡片、`/doctor`、卡片回调签名、secrets 加密存储（App Secret 明文存于 `config.json`，文件权限 0600）。
+本复刻覆盖核心链路，以下原版功能**尚未实现**：后台守护进程服务管理、访问控制（`/invite` 等）、云文档评论、COT 过程消息、`/resume`、`/config` 交互卡片、`/doctor`、卡片回调签名、secrets 加密存储（App Secret 明文存于 `config.json`，文件权限 0600）。Codex 无结构化反问 hook，不接管 AskUserQuestion 类交互（与 botmux 一致）。
 
 设计与实现文档见 [`docs/design.html`](docs/design.html)（技术设计，含架构/时序/状态机图）与 [`docs/implementation.html`](docs/implementation.html)（关键结构与方法）。
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"lark-coding-agent-bridge-go/internal/agent"
+	"lark-coding-agent-bridge-go/internal/ask"
 	"lark-coding-agent-bridge-go/internal/card"
 	"lark-coding-agent-bridge-go/internal/config"
 	"lark-coding-agent-bridge-go/internal/lark"
@@ -65,6 +66,12 @@ type Bridge struct {
 
 	escalationsMu sync.Mutex
 	escalations   map[string]*escalation // p2p chatID → 进行中的建群升级（ADR-0006）
+
+	// Ask broker + per-scope chat routes for Claude hooks / OpenCode questions (ADR-0008).
+	Ask         *ask.Broker
+	AskURL      string // loopback base URL for hooks (empty if not started)
+	routesMu    sync.Mutex
+	scopeRoutes map[string]ask.Route
 }
 
 // NewBridge wires the pipeline. Call HandleMessage / HandleCardAction.
@@ -88,6 +95,25 @@ func NewBridge(
 	if err != nil {
 		return nil, err
 	}
+	b := &Bridge{
+		Paths:       paths,
+		ProfileName: profileName,
+		Profile:     profile,
+		Lark:        larkClient,
+		Agent:       agentAdapter,
+		Bot:         bot,
+		Sessions:    sessions,
+		Workspaces:  workspaces,
+		Bindings:    bindings,
+		Media:       media.NewCache(paths.MediaDir(profileName)),
+		runs:        map[string]*activeRun{},
+		cardScopes:  map[string]string{},
+		Ask:         ask.NewBroker(),
+		scopeRoutes: map[string]ask.Route{},
+	}
+	b.Ask.SetDispatcher(&larkAskDispatcher{b: b})
+	b.pending = NewPendingQueue(debounceMs*time.Millisecond, b.flush)
+
 	if workspaces.Get() == "" {
 		dir := profile.Workspaces.Default
 		if dir == "" {
@@ -102,22 +128,6 @@ func NewBridge(
 	if err := os.MkdirAll(paths.MediaDir(profileName), 0o755); err != nil {
 		return nil, err
 	}
-
-	b := &Bridge{
-		Paths:       paths,
-		ProfileName: profileName,
-		Profile:     profile,
-		Lark:        larkClient,
-		Agent:       agentAdapter,
-		Bot:         bot,
-		Sessions:    sessions,
-		Workspaces:  workspaces,
-		Bindings:    bindings,
-		Media:       media.NewCache(paths.MediaDir(profileName)),
-		runs:        map[string]*activeRun{},
-		cardScopes:  map[string]string{},
-	}
-	b.pending = NewPendingQueue(debounceMs*time.Millisecond, b.flush)
 	return b, nil
 }
 
@@ -155,6 +165,16 @@ func (b *Bridge) HandleMessage(event *larkimEvent) {
 	content := strings.TrimSpace(msg.Content)
 	if content == "" && len(msg.Resources) == 0 {
 		return
+	}
+
+	// pi input/editor freeform: chat text settles the pending ask card (ADR-0008).
+	if content != "" && !strings.HasPrefix(content, "/") {
+		if b.tryAnswerAskWithText(msg.ChatID, msg.SenderID, content) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, _ = b.Lark.SendText(ctx, msg.ChatID, "✅ 已收到你的回答，agent 继续中…", msg.MessageID)
+			return
+		}
 	}
 
 	if strings.HasPrefix(content, "/") {
@@ -242,6 +262,21 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 		SessionID: sess.SessionID,
 		ThreadID:  sess.ThreadID,
 	}
+	// Claude AskUserQuestion hook routing (ADR-0008).
+	if b.AskURL != "" {
+		runOpts.Env = map[string]string{
+			ask.EnvAskURL:           b.AskURL,
+			ask.EnvAskScope:         scope,
+			ask.EnvAskChatID:        first.ChatID,
+			ask.EnvAskRootMessageID: first.MessageID,
+			ask.EnvAskProfile:       b.ProfileName,
+		}
+		if settings := ask.ClaudeSettingsPath(b.Paths, b.ProfileName); settings != "" {
+			runOpts.ExtraArgs = []string{"--settings", settings}
+		}
+	}
+	b.SetScopeRoute(scope, first.ChatID, first.MessageID)
+	defer b.ClearScopeRoute(scope)
 
 	run, err := b.Agent.Run(runOpts)
 	if err != nil {
@@ -259,6 +294,9 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 		b.runsMu.Lock()
 		delete(b.runs, scope)
 		b.runsMu.Unlock()
+		if b.Ask != nil {
+			b.Ask.InvalidateScope(scope, "run ended")
+		}
 	}()
 
 	if err := stream.Start(ctx, card.Render(runState, card.RenderOptions{StopButton: true, GroupChat: first.ChatType != "p2p"})); err != nil {
@@ -283,7 +321,9 @@ eventLoop:
 		idleMins := b.Profile.IdleTimeout()
 		var idleC <-chan time.Time
 		var idleTimer *time.Timer
-		if idleMins > 0 {
+		// Pause idle watchdog while a Feishu ask card is awaiting the user.
+		pendingAsk := b.Ask != nil && b.Ask.PendingCountForScope(scope) > 0
+		if idleMins > 0 && !pendingAsk {
 			idleTimer = time.NewTimer(time.Duration(idleMins) * time.Minute)
 			idleC = idleTimer.C
 		}
@@ -294,6 +334,12 @@ eventLoop:
 			}
 			if !ok {
 				break eventLoop
+			}
+			if evt.Type == agent.EventAskUser {
+				// Block this loop until the user answers so idle doesn't fire
+				// mid-question; OpenCode keeps the turn open server-side.
+				b.handleAskUser(scope, first.ChatID, first.MessageID, evt)
+				continue
 			}
 			runState = runState.Reduce(evt)
 			runState.Stats.DurationMs = time.Since(startTime).Milliseconds()

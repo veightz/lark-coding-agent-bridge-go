@@ -1,6 +1,9 @@
 package bridge
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestLooksLikeTask(t *testing.T) {
 	cases := []struct {
@@ -30,8 +33,13 @@ func TestLooksLikeTask(t *testing.T) {
 		{"英文 implement", "implement retry logic", false, true},
 		{"大写英文动作词", "FIX this", false, true},
 
-		// 长消息兜底 → 建群
-		{"长消息", "我们最近的部署流水线在夜间频繁超时需要处理", false, true},
+		// 长消息但无动作词 → 不建群（ADR-0009：去掉纯长度兜底）
+		{"长消息无动作词", "我们最近流水线在夜间频繁超时，上下文很长但没有明确指令", false, false},
+		{"联调话术", "都可以，我在进行测试，你触发下ask交互，快", false, false},
+		{"请触发交互", "你触发一下 ask 交互卡片", false, false},
+
+		// 长消息 + 动作词 → 建群
+		{"长消息带动作词", "帮我排查一下部署流水线在夜间频繁超时的问题", false, true},
 
 		// 短问句无动作词 → 不建群
 		{"短问句", "今天天气怎么样", false, false},
@@ -48,21 +56,43 @@ func TestLooksLikeTask(t *testing.T) {
 }
 
 func TestGroupNameFor(t *testing.T) {
-	if got := groupNameFor(""); got == "" {
-		t.Error("空内容应回退到默认群名")
+	if got := groupNameFor(""); !strings.HasPrefix(got, "任务 · ") {
+		t.Errorf("空内容应回退到默认群名, got %q", got)
 	}
-	short := "修复登录报错"
-	if got := groupNameFor(short); got != short {
-		t.Errorf("短标题不应截断: %q", got)
+
+	// 短任务：剥「帮我」+ 前缀
+	if got := groupNameFor("帮我修复登录报错"); got != "任务 · 修复登录报错" {
+		t.Errorf("短标题: got %q", got)
 	}
-	long := "这是一个非常非常长的任务描述它一定会超过二十个字符的所以应该被截断处理"
+
+	// 长标题截断（「任务 · 」+ 最多 16 字标题，含省略号）
+	long := "帮我处理这是一个非常非常长的任务描述它一定会超过限制所以应该被截断"
 	got := groupNameFor(long)
-	runes := []rune(got)
-	if len(runes) != 21 || runes[20] != '…' {
-		t.Errorf("长标题应截断为 20 字 + 省略号: %q (%d runes)", got, len(runes))
+	if !strings.HasPrefix(got, "任务 · ") {
+		t.Fatalf("应有统一前缀: %q", got)
 	}
-	// 连续空白压缩
-	if got := groupNameFor("  修复   登录\n报错  "); got != "修复 登录 报错" {
-		t.Errorf("空白应压缩: %q", got)
+	title := strings.TrimPrefix(got, "任务 · ")
+	if n := len([]rune(title)); n > groupNameMaxRunes {
+		t.Errorf("标题过长: %q (%d runes)", title, n)
+	}
+	if !strings.HasSuffix(title, "…") {
+		t.Errorf("超长应截断加省略号: %q", title)
+	}
+
+	// 多行只取首行/提炼关键词段
+	if got := groupNameFor("  帮我修复   登录\n报错详情很多  "); got != "任务 · 修复 登录" {
+		t.Errorf("多行/空白: %q", got)
+	}
+
+	// 背景铺垫 + 后置动作词 → 从动作词起并剥「帮我」
+	if got := groupNameFor("线上有点问题，帮我排查超时"); got != "任务 · 排查超时" {
+		t.Errorf("背景+动作词: got %q", got)
+	}
+
+	// 无动作词时仍给可用群名（截断原文），不原样甩整段
+	chatty := "都可以，我在进行测试，你触发下ask交互，快"
+	got = groupNameFor(chatty)
+	if got == chatty || !strings.HasPrefix(got, "任务 · ") {
+		t.Errorf("闲聊式文案应规范化: %q", got)
 	}
 }

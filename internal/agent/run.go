@@ -167,3 +167,15 @@ func mergeEnv(overrides map[string]string) []string {
 	}
 	return env
 }
+
+// mergeEnvMaps returns a shallow merge of base then overlay (overlay wins).
+func mergeEnvMaps(base, overlay map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range overlay {
+		out[k] = v
+	}
+	return out
+}

@@ -181,21 +181,152 @@ func (b *Bridge) sendGroupJumpCardEx(ctx context.Context, p2pChatID, replyTo, gr
 	}
 }
 
-// groupNameFor 用任务文本生成群名（截断 20 字）。
+// groupNameMaxRunes 是群名中「标题」部分的最大字数（不含「任务 · 」前缀）。
+// 飞书群名上限更宽，这里刻意压短，方便在会话列表里扫一眼。
+const groupNameMaxRunes = 16
+
+// leadInPrefixes 是任务句常见的起手废话，生成群名时剥掉。
+var leadInPrefixes = []string{
+	"帮我", "麻烦你", "麻烦", "请帮我", "请帮", "请你", "帮忙",
+	"能不能", "可以帮我", "劳驾", "拜托",
+	"hey ", "hi ", "hello ", "please ",
+}
+
+// groupNameFor 从用户消息提炼短群名：任务 · {标题}。
+// 避免把整段闲聊/联调话原样塞进群名（ADR-0006 体验补丁）。
 func groupNameFor(content string) string {
-	text := strings.Join(strings.Fields(strings.TrimSpace(content)), " ")
-	if text == "" {
+	title := extractTaskTitle(content)
+	if title == "" {
 		return defaultGroupName()
 	}
-	if utf8.RuneCountInString(text) > 20 {
-		text = string([]rune(text)[:20]) + "…"
+	return "任务 · " + truncateRunes(title, groupNameMaxRunes)
+}
+
+// extractTaskTitle 从任务原文抽出适合当群名的短语。
+func extractTaskTitle(content string) string {
+	text := strings.TrimSpace(content)
+	if text == "" {
+		return ""
+	}
+	// 只取第一行 / 第一句，丢掉后文铺垫。
+	text = firstSegment(text)
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return ""
+	}
+
+	// 剥「帮我/请帮…」等起手。
+	runes := []rune(text)
+	lower := strings.ToLower(text)
+	for _, p := range leadInPrefixes {
+		pl := strings.ToLower(p)
+		if strings.HasPrefix(lower, pl) {
+			rest := strings.TrimSpace(string(runes[len([]rune(p)):]))
+			// 去掉起手后可能残留的「一下/下」
+			rest = strings.TrimPrefix(rest, "一下")
+			rest = strings.TrimPrefix(rest, "下")
+			rest = strings.TrimSpace(rest)
+			if rest != "" {
+				text = rest
+				lower = strings.ToLower(text)
+				runes = []rune(text)
+			}
+			break
+		}
+	}
+
+	// 若正文里仍有动作关键词，从最早命中处起取（「先说明背景，帮我修复 X」→ 再剥起手）。
+	if idx := earliestKeywordIndex(lower); idx > 0 {
+		// idx 是 byte index on lower；本关键词表大小写折叠不改变长度，可按 byte 对齐。
+		cut := byteIndexToRuneOffset(text, idx)
+		if cut > 0 && cut < len(runes) {
+			text = strings.TrimSpace(string(runes[cut:]))
+			lower = strings.ToLower(text)
+			runes = []rune(text)
+		}
+	}
+
+	// 关键词切片后可能又以「帮我」开头，再剥一次。
+	for _, p := range leadInPrefixes {
+		pl := strings.ToLower(p)
+		if strings.HasPrefix(lower, pl) {
+			rest := strings.TrimSpace(string(runes[len([]rune(p)):]))
+			rest = strings.TrimPrefix(rest, "一下")
+			rest = strings.TrimPrefix(rest, "下")
+			rest = strings.TrimSpace(rest)
+			if rest != "" {
+				text = rest
+			}
+			break
+		}
+	}
+
+	text = strings.TrimSpace(text)
+	// 去掉收尾标点
+	text = strings.TrimRight(text, "。.!！?？…~～,，、;；:：")
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
 	}
 	return text
 }
 
+// firstSegment 取第一行，或到第一个强句号为止。
+func firstSegment(s string) string {
+	if i := strings.IndexAny(s, "\n\r"); i >= 0 {
+		s = s[:i]
+	}
+	// 中英文句号 / 问号 / 感叹号
+	for _, sep := range []string{"。", "！", "？", "!", "?"} {
+		if i := strings.Index(s, sep); i >= 0 {
+			// 保留很短前缀时不切（避免「OK。帮我…」被切成 OK）
+			head := strings.TrimSpace(s[:i])
+			if utf8.RuneCountInString(head) >= 4 {
+				return head
+			}
+		}
+	}
+	return s
+}
+
+// earliestKeywordIndex 返回 taskKeywords 在 lower 中最早出现的 byte 下标，未命中 -1。
+func earliestKeywordIndex(lower string) int {
+	best := -1
+	for _, kw := range taskKeywords {
+		k := strings.ToLower(kw)
+		if i := strings.Index(lower, k); i >= 0 {
+			if best < 0 || i < best {
+				best = i
+			}
+		}
+	}
+	return best
+}
+
+func byteIndexToRuneOffset(s string, byteIdx int) int {
+	if byteIdx <= 0 {
+		return 0
+	}
+	if byteIdx >= len(s) {
+		return utf8.RuneCountInString(s)
+	}
+	return utf8.RuneCountInString(s[:byteIdx])
+}
+
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if max <= 0 || len(r) <= max {
+		return s
+	}
+	if max == 1 {
+		return "…"
+	}
+	return string(r[:max-1]) + "…"
+}
+
 func defaultGroupName() string {
 	now := time.Now()
-	return fmt.Sprintf("任务 · %d-%d %02d:%02d",
+	return fmt.Sprintf("任务 · %d/%d %02d:%02d",
 		int(now.Month()), now.Day(), now.Hour(), now.Minute())
 }
 

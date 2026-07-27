@@ -5,6 +5,80 @@ import (
 	"testing"
 )
 
+func TestTranslatePiExtensionUISelect(t *testing.T) {
+	ps := &piSession{}
+	events := ps.translatePiUIRequest(map[string]any{
+		"type":    "extension_ui_request",
+		"id":      "ui-1",
+		"method":  "select",
+		"title":   "Allow?",
+		"options": []any{"Allow", "Block"},
+	})
+	if len(events) != 1 || events[0].Type != EventAskUser {
+		t.Fatalf("events=%v", events)
+	}
+	if events[0].AskID != "ui-1" || len(events[0].Questions) != 1 || len(events[0].Questions[0].Options) != 2 {
+		t.Fatalf("ask=%+v", events[0])
+	}
+	if events[0].Source != "pi" || events[0].Reply == nil {
+		t.Fatalf("source/reply missing")
+	}
+}
+
+func TestTranslatePiExtensionUIConfirm(t *testing.T) {
+	ps := &piSession{}
+	events := ps.translatePiUIRequest(map[string]any{
+		"type":    "extension_ui_request",
+		"id":      "ui-2",
+		"method":  "confirm",
+		"title":   "Clear?",
+		"message": "All lost",
+	})
+	if len(events) != 1 || events[0].Questions[0].Options[0].Key != "yes" {
+		t.Fatalf("events=%+v", events)
+	}
+}
+
+func TestTranslatePiExtensionUIInputFreeform(t *testing.T) {
+	ps := &piSession{}
+	events := ps.translatePiUIRequest(map[string]any{
+		"type":        "extension_ui_request",
+		"id":          "ui-3",
+		"method":      "input",
+		"title":       "Name?",
+		"placeholder": "type here",
+	})
+	if len(events) != 1 || !events[0].Freeform {
+		t.Fatalf("events=%+v", events)
+	}
+}
+
+func TestTranslateOpenCodeQuestionAsked(t *testing.T) {
+	s := &ocServer{}
+	events, terminal := s.translate(ocEventEnvelope{
+		Type: "question.asked",
+		Properties: map[string]any{
+			"id":        "que_1",
+			"sessionID": "ses_1",
+			"questions": []any{
+				map[string]any{
+					"question": "部署？",
+					"options": []any{
+						map[string]any{"label": "是"},
+						map[string]any{"label": "否"},
+					},
+				},
+			},
+		},
+	})
+	if terminal || len(events) != 1 || events[0].Type != EventAskUser {
+		t.Fatalf("events=%v terminal=%v", events, terminal)
+	}
+	if events[0].AskID != "que_1" || len(events[0].Questions) != 1 {
+		t.Fatalf("ask=%+v", events[0])
+	}
+}
+
 func TestTranslatePiEvent(t *testing.T) {
 	cases := []struct {
 		name string

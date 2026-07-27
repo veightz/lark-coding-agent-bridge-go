@@ -60,6 +60,7 @@ func (a *ClaudeAdapter) Run(opts RunOptions) (Run, error) {
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
 	}
+	args = append(args, opts.ExtraArgs...)
 
 	binary := a.binary
 	if binary == "" {
@@ -68,7 +69,7 @@ func (a *ClaudeAdapter) Run(opts RunOptions) (Run, error) {
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = opts.Cwd
 
-	run, err := startProc(cmd, opts.Prompt, opts.StopGraceMs, mergeEnv(a.Env), translateClaudeLine, func(msg string) Event {
+	run, err := startProc(cmd, opts.Prompt, opts.StopGraceMs, mergeEnv(mergeEnvMaps(a.Env, opts.Env)), translateClaudeLine, func(msg string) Event {
 		return Event{Type: EventError, Message: msg, TerminationReason: TermFailed}
 	})
 	if err != nil {
