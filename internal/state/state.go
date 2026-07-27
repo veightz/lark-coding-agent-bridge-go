@@ -67,6 +67,23 @@ func (s *SessionStore) Delete(scope string) {
 	s.dirty = true
 }
 
+// FindByAgentID returns the first scope whose SessionID or ThreadID
+// matches agentID. Used as a fallback when bindings.json is missing an
+// entry but sessions.json still records the group→session link.
+func (s *SessionStore) FindByAgentID(agentID string) (scope string, sess Session, ok bool) {
+	if agentID == "" {
+		return "", Session{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for sc, sess := range s.sessions {
+		if sess.SessionID == agentID || sess.ThreadID == agentID {
+			return sc, sess, true
+		}
+	}
+	return "", Session{}, false
+}
+
 // Flush writes pending changes to disk.
 func (s *SessionStore) Flush() error {
 	s.mu.Lock()

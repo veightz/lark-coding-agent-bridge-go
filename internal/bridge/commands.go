@@ -24,6 +24,7 @@ const helpText = `**可用命令**
 - /ws remove <name> — 删除命名工作区
 - /sessions — 列出命令行里已有的 agent 会话
 - /bind <序号或id前缀> [--force] — 把当前聊天绑定到该会话
+- /open <序号或id前缀> — 为该会话复用/新建群并给跳转按钮（私聊常用）
 - /unbind — 解除当前聊天的会话绑定
 - /stop — 停止当前运行
 - /status — 查看 profile、agent、工作目录和会话状态
@@ -93,6 +94,9 @@ func (b *Bridge) handleCommand(msg *Message, content string) {
 
 	case "/bind":
 		b.handleBind(msg, args, reply)
+
+	case "/open":
+		b.handleOpen(msg, args, reply)
 
 	case "/unbind":
 		b.handleUnbind(msg, reply)
@@ -420,6 +424,9 @@ func (b *Bridge) forwardToGroup(groupChatID, cardMessageID, userOpenID, text str
 
 	if newSess.SessionID != "" || newSess.ThreadID != "" {
 		b.Sessions.Set(scope, newSess)
+		b.recordGroupBinding(scope, groupChatID, "group", newSess)
+		_ = b.Sessions.Flush()
+		_ = b.Bindings.Flush()
 	}
 }
 

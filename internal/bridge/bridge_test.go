@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -10,7 +11,9 @@ import (
 
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 
+	"lark-coding-agent-bridge-go/internal/config"
 	"lark-coding-agent-bridge-go/internal/lark"
+	"lark-coding-agent-bridge-go/internal/state"
 )
 
 func unmarshalEvent(t *testing.T, raw string) *larkim.P2MessageReceiveV1 {
@@ -132,5 +135,49 @@ func TestNormalizeImageMessage(t *testing.T) {
 	msg := NormalizeMessage(unmarshalEvent(t, raw), "ou_bot")
 	if len(msg.Resources) != 1 || msg.Resources[0].FileKey != "img_v3_abc" || msg.Resources[0].Type != "image" {
 		t.Fatalf("resources = %+v", msg.Resources)
+	}
+}
+
+func TestRecordGroupBinding(t *testing.T) {
+	path := t.TempDir()
+	bindings, err := state.LoadBindings(filepath.Join(path, "bindings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &Bridge{
+		Bindings: bindings,
+		Profile:  &config.Profile{AgentKind: config.AgentOpenCode},
+	}
+
+	sess := state.Session{SessionID: "sess-1", Cwd: "/tmp/x"}
+	// p2p must not auto-bind
+	b.recordGroupBinding("p2p_1", "p2p_1", "p2p", sess)
+	if bindings.HasScope("p2p_1") {
+		t.Fatal("p2p should not auto-record binding")
+	}
+
+	b.recordGroupBinding("oc_group", "oc_group", "group", sess)
+	bind, ok := bindings.Get(state.SessionKey(config.AgentOpenCode, "sess-1"))
+	if !ok || bind.ChatID != "oc_group" || bind.ChatType != "group" {
+		t.Fatalf("auto binding = %+v ok=%v", bind, ok)
+	}
+
+	// already bound elsewhere: do not steal
+	b.recordGroupBinding("oc_other", "oc_other", "group", sess)
+	bind, _ = bindings.Get(state.SessionKey(config.AgentOpenCode, "sess-1"))
+	if bind.ChatID != "oc_group" {
+		t.Fatalf("binding stolen: %+v", bind)
+	}
+}
+
+func TestReusableGroupSkipsP2P(t *testing.T) {
+	b := &Bridge{}
+	if _, _, ok := b.reusableGroup(context.Background(), state.Binding{
+		ChatID: "oc_x", ChatType: "p2p",
+	}); ok {
+		t.Fatal("p2p binding must not be reusable as group")
+	}
+	if _, _, ok := b.reusableGroup(context.Background(), state.Binding{}); ok {
+		t.Fatal("empty chat id must not be reusable")
 	}
 }

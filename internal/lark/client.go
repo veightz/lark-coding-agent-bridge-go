@@ -349,33 +349,56 @@ func (c *Client) GetMessage(ctx context.Context, messageID string) (msgType, con
 	return out.Data.Items[0].MessageType, out.Data.Items[0].Body.Content, nil
 }
 
-// GetChatName resolves a chat's display name ("" for p2p chats or errors).
-func (c *Client) GetChatName(ctx context.Context, chatID string) string {
+// ChatInfo is a subset of im/v1/chats/{id} used for binding reuse.
+type ChatInfo struct {
+	Name     string // 群名；p2p 常为空
+	ChatMode string // group | p2p | topic …
+	ChatType string // private | public（与 bridge 的 p2p/group 不同）
+}
+
+// GetChat fetches chat metadata. ok=false means the chat is gone or
+// inaccessible (deleted, bot kicked, bad id).
+func (c *Client) GetChat(ctx context.Context, chatID string) (info ChatInfo, ok bool) {
 	token, err := c.tenantAccessToken(ctx)
 	if err != nil {
-		return ""
+		return ChatInfo{}, false
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		c.BaseURL+"/open-apis/im/v1/chats/"+chatID, nil)
 	if err != nil {
-		return ""
+		return ChatInfo{}, false
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return ""
+		return ChatInfo{}, false
 	}
 	defer resp.Body.Close()
 	var out struct {
 		Code int `json:"code"`
 		Data struct {
-			Name string `json:"name"`
+			Name     string `json:"name"`
+			ChatMode string `json:"chat_mode"`
+			ChatType string `json:"chat_type"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || out.Code != 0 {
+		return ChatInfo{}, false
+	}
+	return ChatInfo{
+		Name:     out.Data.Name,
+		ChatMode: out.Data.ChatMode,
+		ChatType: out.Data.ChatType,
+	}, true
+}
+
+// GetChatName resolves a chat's display name ("" for p2p chats or errors).
+func (c *Client) GetChatName(ctx context.Context, chatID string) string {
+	info, ok := c.GetChat(ctx, chatID)
+	if !ok {
 		return ""
 	}
-	return out.Data.Name
+	return info.Name
 }
 
 func (c *Client) tenantAccessToken(ctx context.Context) (string, error) {

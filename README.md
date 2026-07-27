@@ -59,8 +59,9 @@ go build -o bin/lark-coding-agent-bridge ./cmd/lark-coding-agent-bridge
 | `/new`, `/reset` | 清空当前会话（常驻型 agent 同时重置其进程/会话） |
 | `/cd <path>` | 切换工作目录（会话重置） |
 | `/ws list` / `save <name>` / `use <name>` / `remove <name>` | 命名工作区管理 |
-| `/sessions` | 列出命令行里已有的 agent 会话（含绑定状态） |
+| `/sessions` | 列出命令行里已有的 agent 会话（含绑定群标记） |
 | `/bind <序号或id前缀> [--force]` | 把当前聊天绑定到该会话（去重，已绑定会提示所在聊天） |
+| `/open <序号或id前缀>` | 为该会话复用已有群或新建群，私聊下发跳转按钮（已绑定则不新建） |
 | `/unbind` | 解除当前聊天的会话绑定 |
 | `/stop` | 停止当前运行（同卡片上的 ⏹ 按钮） |
 | `/status` | 查看 profile、agent、工作目录、会话状态 |
@@ -75,7 +76,7 @@ go build -o bin/lark-coding-agent-bridge ./cmd/lark-coding-agent-bridge
 | `~/.lark-coding-agent-bridge/config.json` | 根配置（profiles） |
 | `~/.lark-coding-agent-bridge/registry/processes.json` | 进程注册表（dashboard） |
 | `~/.lark-coding-agent-bridge/profiles/<name>/sessions.json` | 会话状态 |
-| `~/.lark-coding-agent-bridge/profiles/<name>/bindings.json` | 会话↔聊天绑定表（ADR-0005） |
+| `~/.lark-coding-agent-bridge/profiles/<name>/bindings.json` | 会话↔聊天绑定表（ADR-0005/0007；群跑完自动写入） |
 | `~/.lark-coding-agent-bridge/profiles/<name>/workspaces.json` | 工作区绑定 |
 | `~/.lark-coding-agent-bridge/profiles/<name>/media/` | 附件缓存 |
 | `~/.lark-coding-agent-bridge/workspaces/<name>/default/` | 默认工作目录 |

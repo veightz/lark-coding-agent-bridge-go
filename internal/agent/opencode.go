@@ -102,6 +102,9 @@ func (a *OpenCodeAdapter) Run(opts RunOptions) (Run, error) {
 		srv.closeRun(sessionID, run)
 		return nil, fmt.Errorf("prompt_async 失败: %w", err)
 	}
+	// 立刻把 sessionID 回传给 bridge，才能写入 sessions.json / bindings.json
+	//（opencode SSE 事件本身不携带“新建会话”系统帧，与 pi 一样由适配器补发）。
+	safeSend(run.events, Event{Type: EventSystem, SessionID: sessionID})
 	// SSE 是快路径，轮询是兜底：丢帧/半死流也能把结果轮询回来。
 	go srv.pollRun(run)
 	return run, nil

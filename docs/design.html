@@ -73,6 +73,7 @@
     <li><a href="#s8">自升级（upgrade）</a></li>
     <li><a href="#s9">数据目录布局</a></li>
     <li><a href="#s10">私聊任务自动建群</a></li>
+    <li><a href="#s11">群↔会话关联与 /open 复用</a></li>
   </ol>
 </nav>
 
@@ -939,7 +940,7 @@
 ├── profiles/
 │   └── &lt;name&gt;/                   # 每个 profile 一份
 │       ├── sessions.json          # scope → agent 会话 ID 映射
-│       ├── bindings.json          # sessionKey → scope（/bind 绑定，ADR-0005）
+│       ├── bindings.json          # sessionKey → scope/chat（/bind + 群自动关联 + /open，ADR-0005/0007）
 │       ├── workspaces.json        # scope → 工作目录映射
 │       ├── media/                 # 下载的消息附件
 │       └── lark-cli/              # 该 profile 的 lark 侧凭据/缓存
@@ -1043,6 +1044,30 @@
 </div>
 
 <div class="note"><b>设计要点：</b>升级发生在去抖队列<b>之前</b>——把消息 ChatID 改写为新群后再入队，连发消息经 600ms 去抖自然合并成同一批 run；跳转卡片用 <code>https://applink.feishu.cn/client/chat/open?openChatId=&lt;id&gt;</code>，无需分享群链接、一键直达；快捷回复（quick_reply）的私聊提示改用 <code>receive_id_type=open_id</code> 发送，修复了把 open_id 当 chat_id 导致的 230001 invalid receive_id。</div>
+
+<h2 id="s11"><span class="no">11</span>群↔会话关联与 /open 复用（ADR-0007）</h2>
+<p>群里跑出的 agent 会话需要<strong>可被私聊找回</strong>：用户私聊 bot → <code>/sessions</code> 看最近会话 → <code>/open &lt;序号&gt;</code> 进入该会话对应的群。若 session 已绑定过群，则<strong>复用</strong>并下发跳转按钮，绝不重复建群。</p>
+
+<h3>11.1 双向存储</h3>
+<ul>
+  <li><code>sessions.json</code>：<code>scope → {sessionId|threadId, cwd}</code>（跑完写入；OpenCode 适配器在 <code>prompt_async</code> 成功后补发 <code>EventSystem{SessionID}</code>）。</li>
+  <li><code>bindings.json</code>：<code>sessionKey=agent:id → {scope, chatId, chatType}</code>。来源：
+    <ol>
+      <li>显式 <code>/bind</code>（任意聊天，含 p2p）；</li>
+      <li>群 scope <code>runBatch</code> / <code>forwardToGroup</code> 结束后 <code>SetIfAbsent</code> 自动写入（不抢已有绑定）；</li>
+      <li><code>/open</code> 新建或复用时写入/刷新。</li>
+    </ol>
+  </li>
+</ul>
+
+<h3>11.2 /open 流程</h3>
+<ol>
+  <li>解析序号或 id 前缀（与 <code>/bind</code> 相同的 <code>MatchSession</code>）。</li>
+  <li>查 bindings；缺失则用 sessions 反查群 scope 并回填（兼容旧数据）。</li>
+  <li>绑定指向的群仍存在且 <code>chat_mode ≠ p2p</code> → 私聊发「群已存在」跳转卡片，结束。</li>
+  <li>否则 <code>CreateChat</code> → 写 sessions + bindings → 群欢迎 → 「已创建群」跳转卡片。</li>
+</ol>
+<p>与 <code>/bind</code> 的分工：<code>/bind</code> 把会话挂到<strong>当前</strong>聊天；<code>/open</code> 保证会话有一个<strong>群</strong>并给一键入口（私聊主场景）。</p>
 
 <footer>
   lark-coding-agent-bridge-go · 技术设计文档 · 配套实现文档见 <code>implementation.html</code>

@@ -117,7 +117,7 @@ func (b *Bridge) runEscalation(msg *Message, esc *escalation) {
 	}
 
 	// 私聊里的跳转卡片。
-	b.sendGroupJumpCard(ctx, msg.ChatID, msg.MessageID, groupID, name)
+	b.sendGroupJumpCardEx(ctx, msg.ChatID, msg.MessageID, groupID, name, false)
 
 	// 任务转入群 scope，自动启动运行。
 	b.pushToGroup(groupID, msg)
@@ -133,19 +133,32 @@ func (b *Bridge) pushToGroup(groupID string, msg *Message) {
 	b.pending.Push(synthetic.Scope(), &synthetic)
 }
 
-// sendGroupJumpCard 在私聊里发一张卡片，带一键跳转群会话的按钮。
+// sendGroupJumpCard 在私聊里发一张卡片，带一键跳转群会话的按钮（新建群）。
 func (b *Bridge) sendGroupJumpCard(ctx context.Context, p2pChatID, replyTo, groupID, groupName string) {
+	b.sendGroupJumpCardEx(ctx, p2pChatID, replyTo, groupID, groupName, false)
+}
+
+// sendGroupJumpCardEx 发送跳转卡片。reused=true 表示复用已有绑定群（不新建）。
+func (b *Bridge) sendGroupJumpCardEx(ctx context.Context, p2pChatID, replyTo, groupID, groupName string, reused bool) {
+	title := "🚀 任务已在新群中启动"
+	body := "已创建群 **" + groupName + "**，任务正在群里运行，回复和进度都会更新到群里。"
+	fallback := "🚀 已创建群「" + groupName + "」，任务正在群里运行。"
+	if reused {
+		title = "✅ 群已存在，可直接进入"
+		body = "会话已绑定到群 **" + groupName + "**，无需新建。点击下方按钮进入群聊续聊。"
+		fallback = "✅ 会话已绑定群「" + groupName + "」，请直接进入该群续聊。"
+	}
 	cardJSON := map[string]any{
 		"schema": "2.0",
 		"config": map[string]any{"wide_screen_mode": true},
 		"header": map[string]any{
-			"title":    map[string]any{"tag": "plain_text", "content": "🚀 任务已在新群中启动"},
+			"title":    map[string]any{"tag": "plain_text", "content": title},
 			"template": "blue",
 		},
 		"body": map[string]any{"elements": []map[string]any{
 			{
 				"tag":     "markdown",
-				"content": "已创建群 **" + groupName + "**，任务正在群里运行，回复和进度都会更新到群里。",
+				"content": body,
 			},
 			{
 				"tag":  "button",
@@ -163,9 +176,8 @@ func (b *Bridge) sendGroupJumpCard(ctx context.Context, p2pChatID, replyTo, grou
 		_, err = b.Lark.SendCardByReference(ctx, p2pChatID, cardID, replyTo)
 	}
 	if err != nil {
-		log.Printf("[escalate] jump card failed, fallback to text: %v", err)
-		_, _ = b.Lark.SendText(ctx, p2pChatID,
-			"🚀 已创建群「"+groupName+"」，任务正在群里运行。", replyTo)
+		log.Printf("[jump-card] failed, fallback to text: %v", err)
+		_, _ = b.Lark.SendText(ctx, p2pChatID, fallback, replyTo)
 	}
 }
 
@@ -211,5 +223,5 @@ func (b *Bridge) handleNewChat(msg *Message, name string, reply func(string)) {
 		log.Printf("[new-chat] welcome message failed: %v", err)
 	}
 
-	b.sendGroupJumpCard(ctx, msg.ChatID, msg.MessageID, groupID, name)
+	b.sendGroupJumpCardEx(ctx, msg.ChatID, msg.MessageID, groupID, name, false)
 }

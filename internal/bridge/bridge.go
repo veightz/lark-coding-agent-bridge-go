@@ -357,13 +357,43 @@ eventLoop:
 
 	if newSess.SessionID != "" || newSess.ThreadID != "" {
 		b.Sessions.Set(scope, newSess)
+		// 群聊跑出 session 后自动写入 bindings.json（ADR-0007），
+		// 便于私聊 /sessions + /open 复用已有群。
+		b.recordGroupBinding(scope, first.ChatID, first.ChatType, newSess)
 	}
 	// If the run produced no session ids (e.g. it failed before init), the
 	// previous session stays intact so the next message can resume it.
 	if err := b.Sessions.Flush(); err != nil {
 		log.Printf("[run] sessions flush failed: %v", err)
 	}
+	if err := b.Bindings.Flush(); err != nil {
+		log.Printf("[run] bindings flush failed: %v", err)
+	}
 	return nil
+}
+
+// recordGroupBinding writes the reverse session→group link after a group
+// run. Does not overwrite an explicit binding to a different chat.
+func (b *Bridge) recordGroupBinding(scope, chatID, chatType string, sess state.Session) {
+	if chatType == "p2p" || chatID == "" {
+		return
+	}
+	agentID := sess.SessionID
+	if agentID == "" {
+		agentID = sess.ThreadID
+	}
+	if agentID == "" {
+		return
+	}
+	key := state.SessionKey(b.kind(), agentID)
+	ok := b.Bindings.SetIfAbsent(key, state.Binding{
+		Scope:    scope,
+		ChatID:   chatID,
+		ChatType: "group",
+	})
+	if !ok {
+		log.Printf("[bind] skip auto-record %s: already bound elsewhere", key)
+	}
 }
 
 // resetSession clears the stored session AND any persistent agent process
