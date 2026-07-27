@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -95,7 +96,7 @@ func printVersion() {
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	var (
-		profileFlag   = fs.String("profile", "", "使用指定 profile（默认取 activeProfile）")
+		profileFlag   = fs.String("profile", "", "使用指定 profile（必填）")
 		agentFlag     = fs.String("agent", "", "agent 类型：claude | codex | pi | opencode")
 		workspaceFlag = fs.String("workspace", "", "初始工作目录")
 		appIDFlag     = fs.String("app-id", "", "已有应用的 App ID（跳过扫码创建）")
@@ -109,13 +110,7 @@ func cmdRun(args []string) error {
 func run(profileName, agentKind, workspace, appID string) error {
 	paths := config.NewPaths()
 	if profileName == "" {
-		// No explicit --profile: follow the config's active profile,
-		// falling back to "default" for first-run onboarding.
-		if cfg, err := config.Load(paths); err == nil && cfg != nil && cfg.ActiveProfile != "" {
-			profileName = cfg.ActiveProfile
-		} else {
-			profileName = "default"
-		}
+		return errMissingProfile(paths)
 	}
 	if !config.ValidProfileName(profileName) {
 		return fmt.Errorf("非法 profile 名: %q", profileName)
@@ -220,6 +215,20 @@ func handleCardAction(br *bridge.Bridge, event *callback.CardActionTriggerEvent)
 		value = event.Event.Action.Value
 	}
 	return br.HandleCardAction(chatID, messageID, operatorID, value)
+}
+
+// errMissingProfile returns a clear error when --profile is omitted.
+func errMissingProfile(paths config.Paths) error {
+	msg := "请指定 --profile <name>（例如: lark-coding-agent-bridge run --profile oc）"
+	if cfg, err := config.Load(paths); err == nil && cfg != nil && len(cfg.Profiles) > 0 {
+		names := make([]string, 0, len(cfg.Profiles))
+		for name := range cfg.Profiles {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		msg += "\n已有 profile: " + strings.Join(names, ", ")
+	}
+	return fmt.Errorf("%s", msg)
 }
 
 // loadOrOnboard loads the profile, running the QR wizard (or --app-id
