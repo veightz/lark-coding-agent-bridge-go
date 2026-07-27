@@ -148,6 +148,16 @@ func TestCalculateCachedOnly(t *testing.T) {
 	}
 }
 
+func TestCalculateOpenCodeStyleCache(t *testing.T) {
+	// OpenCode: input is non-cached only, cache.read may exceed input.
+	// non-peak: (165*0.5 + 19200*0.1 + 50*2) / 1M = (82.5 + 1920 + 100) / 1M = 0.0021025 → 0.0021
+	now := time.Date(2026, 7, 27, 6, 0, 0, 0, time.UTC)
+	got, _ := Calculate("deepseek-chat", 165, 50, 19200, now)
+	if got != 0.0021 {
+		t.Errorf("opencode-style cache got %.6f, want 0.002100", got)
+	}
+}
+
 func TestFormatCNY(t *testing.T) {
 	if got := FormatCNY(0); got != "" {
 		t.Errorf("FormatCNY(0) = %q, want empty", got)

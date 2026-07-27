@@ -82,27 +82,30 @@ func TestRenderCard(t *testing.T) {
 		t.Fatal("no elements")
 	}
 
-	// stop/refresh buttons must be present while running
-	var sawButton bool
+	// stop/refresh buttons must be present while running as auto-width columns
+	var sawButtons bool
 	for _, el := range elements {
-		if el["tag"] == "button" {
-			sawButton = true
+		if el["tag"] != "column_set" {
+			continue
 		}
-		if el["tag"] == "column_set" {
-			columns, _ := el["columns"].([]map[string]any)
-			for _, col := range columns {
-				if colEls, _ := col["elements"].([]map[string]any); colEls != nil {
-					for _, ce := range colEls {
-						if ce["tag"] == "button" {
-							sawButton = true
-						}
-					}
-				}
+		if el["flex_mode"] != "flow" {
+			t.Errorf("button column_set flex_mode = %v, want flow", el["flex_mode"])
+		}
+		columns, _ := el["columns"].([]map[string]any)
+		if len(columns) != 2 {
+			t.Errorf("button columns = %d, want 2", len(columns))
+		}
+		for _, col := range columns {
+			if col["width"] != "auto" {
+				t.Errorf("button column width = %v, want auto", col["width"])
+			}
+			if colEls, _ := col["elements"].([]map[string]any); len(colEls) > 0 && colEls[0]["tag"] == "button" {
+				sawButtons = true
 			}
 		}
 	}
-	if !sawButton {
-		t.Error("no stop/refresh button while running")
+	if !sawButtons {
+		t.Error("no stop/refresh buttons while running")
 	}
 
 	// email masked in markdown content
@@ -124,7 +127,14 @@ func TestRenderCard(t *testing.T) {
 			t.Error("stop button should not render when done")
 		}
 		if el["tag"] == "column_set" {
-			t.Error("action buttons should not render when done")
+			// Only the action button row uses column_set with buttons.
+			if columns, ok := el["columns"].([]map[string]any); ok {
+				for _, col := range columns {
+					if colEls, _ := col["elements"].([]map[string]any); len(colEls) > 0 && colEls[0]["tag"] == "button" {
+						t.Error("action buttons should not render when done")
+					}
+				}
+			}
 		}
 	}
 }
@@ -158,5 +168,30 @@ func TestToolGrouping(t *testing.T) {
 	}
 	if panels != 1 {
 		t.Errorf("finalized with 4 tools: panels = %d, want 1", panels)
+	}
+}
+
+func TestTotalTokensAndFormat(t *testing.T) {
+	// Claude-style: cache nested under input
+	claude := &RunStats{InputTokens: 1000, OutputTokens: 50, CachedInputTokens: 200}
+	if got := claude.TotalTokens(); got != 1050 {
+		t.Errorf("claude total = %d, want 1050", got)
+	}
+	if got := formatTokenUsage(claude); got != "🔤 1050 token (in 1000 · cache 200 · out 50)" {
+		t.Errorf("claude format = %q", got)
+	}
+
+	// OpenCode-style: cache additive, input is non-cached only
+	oc := &RunStats{InputTokens: 165, OutputTokens: 50, CachedInputTokens: 19200, ReasoningOutputTokens: 20}
+	if got := oc.TotalTokens(); got != 165+19200+50+20 {
+		t.Errorf("opencode total = %d, want %d", got, 165+19200+50+20)
+	}
+	if got := formatTokenUsage(oc); got != "🔤 19435 token (in 165 · cache 19200 · out 50 · reason 20)" {
+		t.Errorf("opencode format = %q", got)
+	}
+
+	plain := &RunStats{InputTokens: 100, OutputTokens: 20}
+	if got := formatTokenUsage(plain); got != "🔤 120 token" {
+		t.Errorf("plain format = %q", got)
 	}
 }

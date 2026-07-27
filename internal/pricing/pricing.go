@@ -86,9 +86,12 @@ func Calculate(model string, inputTokens, outputTokens, cachedInputTokens int, n
 		multiplier = peakMul
 	}
 
-	nonCachedInput := inputTokens - cachedInputTokens
-	if nonCachedInput < 0 {
-		nonCachedInput = 0
+	// Claude nests cache under input (cached ≤ input). OpenCode reports
+	// non-cached input separately, so cached may exceed input — treat
+	// input as already-non-cached in that case.
+	nonCachedInput := inputTokens
+	if cachedInputTokens > 0 && cachedInputTokens <= inputTokens {
+		nonCachedInput = inputTokens - cachedInputTokens
 	}
 
 	cost := (float64(nonCachedInput)*r.Input +

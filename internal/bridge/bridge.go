@@ -458,8 +458,8 @@ func summaryOf(state *card.RunState) string {
 	// Prepend stats if the run has duration info.
 	if state.Stats.DurationMs > 0 {
 		dur := formatDuration(state.Stats.DurationMs)
-		if state.Stats.UsageAvailable || state.Stats.InputTokens+state.Stats.OutputTokens > 0 {
-			total := state.Stats.InputTokens + state.Stats.OutputTokens
+		if state.Stats.UsageAvailable || state.Stats.TotalTokens() > 0 {
+			total := state.Stats.TotalTokens()
 			return fmt.Sprintf("⏱ %s  🔤 %d token  %s", dur, total, truncatePreview(text, 60))
 		}
 		return fmt.Sprintf("⏱ %s  %s", dur, truncatePreview(text, 60))

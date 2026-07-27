@@ -69,14 +69,26 @@ const (
 
 // RunStats holds metrics collected during a run.
 type RunStats struct {
-	DurationMs        int64   // wall clock duration in ms
-	InputTokens       int     // prompt tokens
-	OutputTokens      int     // completion tokens
-	CachedInputTokens int     // cached prompt tokens
-	CostUSD           float64 // agent-reported cost in USD
-	CostCNY           float64 // calculated cost in CNY from pricing table
-	Model             string  // model name from EventSystem
-	UsageAvailable    bool    // true if any usage data was reported
+	DurationMs            int64   // wall clock duration in ms
+	InputTokens           int     // prompt tokens (see TotalTokens for agent differences)
+	OutputTokens          int     // completion tokens
+	CachedInputTokens     int     // cached prompt tokens
+	ReasoningOutputTokens int     // reasoning / thinking tokens (opencode, codex, …)
+	CostUSD               float64 // agent-reported cost in USD
+	CostCNY               float64 // calculated cost in CNY from pricing table
+	Model                 string  // model name from EventSystem
+	UsageAvailable        bool    // true if any usage data was reported
+}
+
+// TotalTokens returns the complete token count for display.
+// Claude-style usage nests cache under input (cached ≤ input); OpenCode-style
+// reports non-cached input + cache.read separately (cached may exceed input).
+func (s *RunStats) TotalTokens() int {
+	total := s.InputTokens + s.OutputTokens + s.ReasoningOutputTokens
+	if s.CachedInputTokens > s.InputTokens {
+		total += s.CachedInputTokens
+	}
+	return total
 }
 
 // RunState is the full presentation state of one agent run.
@@ -165,6 +177,7 @@ func (s *RunState) Reduce(evt agent.Event) *RunState {
 		next.Stats.InputTokens = evt.InputTokens
 		next.Stats.OutputTokens = evt.OutputTokens
 		next.Stats.CachedInputTokens = evt.CachedInputTokens
+		next.Stats.ReasoningOutputTokens = evt.ReasoningOutputTokens
 		next.Stats.CostUSD = evt.CostUSD
 		next.Stats.UsageAvailable = true
 		// Calculate CNY cost from pricing table when model is known

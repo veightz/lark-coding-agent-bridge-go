@@ -731,9 +731,12 @@ func reconcilePoll(delivered string, last *ocMessageEntry) (events []Event, term
 	if last.Info.Tokens != nil || (last.Info.Cost != nil && *last.Info.Cost > 0) {
 		usage := Event{Type: EventUsage}
 		if t := last.Info.Tokens; t != nil {
+			// OpenCode reports input as non-cached only; cache.read /
+			// reasoning sit alongside it (not nested under input).
 			usage.InputTokens = t.Input
 			usage.OutputTokens = t.Output
 			usage.CachedInputTokens = t.Cache.Read
+			usage.ReasoningOutputTokens = t.Reasoning
 		}
 		if c := last.Info.Cost; c != nil {
 			usage.CostUSD = *c

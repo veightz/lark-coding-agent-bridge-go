@@ -204,29 +204,24 @@ func notationMd(content string) map[string]any {
 	return noteMd(content)
 }
 
+// actionButtons lays refresh/stop side-by-side without stretching.
+// CardKit 2.0 dropped the v1 `action` tag; use column_set with auto-width
+// columns so each button hugs its label instead of filling half the card.
 func actionButtons() map[string]any {
 	return map[string]any{
-		"tag":              "column_set",
-		"flex_mode":        "none",
-		"background_style": "default",
+		"tag":                "column_set",
+		"flex_mode":          "flow",
+		"horizontal_spacing": "small",
 		"columns": []map[string]any{
 			{
-				"tag":            "column",
-				"width":          "weighted",
-				"weight":         1,
-				"vertical_align": "center",
-				"elements": []map[string]any{
-					refreshButton(),
-				},
+				"tag":      "column",
+				"width":    "auto",
+				"elements": []map[string]any{refreshButton()},
 			},
 			{
-				"tag":            "column",
-				"width":          "weighted",
-				"weight":         1,
-				"vertical_align": "center",
-				"elements": []map[string]any{
-					stopButton(),
-				},
+				"tag":      "column",
+				"width":    "auto",
+				"elements": []map[string]any{stopButton()},
 			},
 		},
 	}
@@ -309,19 +304,44 @@ func summaryText(state *RunState) string {
 
 func statsLine(stats *RunStats) map[string]any {
 	parts := []string{"⏱ " + formatDuration(stats.DurationMs)}
-	if stats.UsageAvailable || stats.InputTokens+stats.OutputTokens > 0 {
-		total := stats.InputTokens + stats.OutputTokens
-		if stats.CachedInputTokens > 0 {
-			parts = append(parts, fmt.Sprintf("🔤 %d token (缓存 %d)", total, stats.CachedInputTokens))
-		} else {
-			parts = append(parts, fmt.Sprintf("🔤 %d token", total))
-		}
+	if stats.UsageAvailable || stats.TotalTokens() > 0 {
+		parts = append(parts, formatTokenUsage(stats))
 		costStr := formatCostCNY(stats)
 		if costStr != "" {
 			parts = append(parts, "💰 "+costStr)
 		}
 	}
 	return noteMd(strings.Join(parts, " · "))
+}
+
+// formatTokenUsage builds a complete token summary, e.g.
+//
+//	🔤 19415 token (in 165 · cache 19200 · out 50)
+//
+// so OpenCode-style additive cache isn't hidden behind a tiny "total".
+// Labels stay English to match "token" and keep the footer compact.
+func formatTokenUsage(stats *RunStats) string {
+	total := stats.TotalTokens()
+	if stats.CachedInputTokens == 0 && stats.ReasoningOutputTokens == 0 {
+		return fmt.Sprintf("🔤 %d token", total)
+	}
+	var bits []string
+	if stats.InputTokens > 0 || stats.CachedInputTokens > 0 {
+		bits = append(bits, fmt.Sprintf("in %d", stats.InputTokens))
+	}
+	if stats.CachedInputTokens > 0 {
+		bits = append(bits, fmt.Sprintf("cache %d", stats.CachedInputTokens))
+	}
+	if stats.OutputTokens > 0 {
+		bits = append(bits, fmt.Sprintf("out %d", stats.OutputTokens))
+	}
+	if stats.ReasoningOutputTokens > 0 {
+		bits = append(bits, fmt.Sprintf("reason %d", stats.ReasoningOutputTokens))
+	}
+	if len(bits) == 0 {
+		return fmt.Sprintf("🔤 %d token", total)
+	}
+	return fmt.Sprintf("🔤 %d token (%s)", total, strings.Join(bits, " · "))
 }
 
 func formatCostCNY(stats *RunStats) string {
@@ -352,7 +372,7 @@ func formatDuration(ms int64) string {
 }
 
 func formatRunStats(dur string, stats *RunStats) string {
-	total := stats.InputTokens + stats.OutputTokens
+	total := stats.TotalTokens()
 	if total == 0 {
 		return "已完成 · " + dur
 	}
