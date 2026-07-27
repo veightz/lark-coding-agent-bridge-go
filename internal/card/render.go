@@ -306,6 +306,10 @@ func statsLine(stats *RunStats) map[string]any {
 	parts := []string{"⏱ " + formatDuration(stats.DurationMs)}
 	if stats.UsageAvailable || stats.TotalTokens() > 0 {
 		parts = append(parts, formatTokenUsage(stats))
+		ctxStr := formatContextUsage(stats)
+		if ctxStr != "" {
+			parts = append(parts, ctxStr)
+		}
 		costStr := formatCostCNY(stats)
 		if costStr != "" {
 			parts = append(parts, "💰 "+costStr)
@@ -353,6 +357,19 @@ func formatCostCNY(stats *RunStats) string {
 		return fmt.Sprintf("¥%.4f", cny)
 	}
 	return ""
+}
+
+func formatContextUsage(stats *RunStats) string {
+	ctx := stats.ContextTokens()
+	if ctx == 0 {
+		return ""
+	}
+	cw := pricing.ContextWindow(stats.Model)
+	if cw > 0 {
+		pct := float64(ctx) * 100 / float64(cw)
+		return fmt.Sprintf("ctx %.1f%%", pct)
+	}
+	return fmt.Sprintf("ctx %d", ctx)
 }
 
 func formatDuration(ms int64) string {

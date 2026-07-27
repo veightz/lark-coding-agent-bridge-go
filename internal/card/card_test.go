@@ -195,3 +195,49 @@ func TestTotalTokensAndFormat(t *testing.T) {
 		t.Errorf("plain format = %q", got)
 	}
 }
+
+func TestContextTokens(t *testing.T) {
+	// Claude-style: cache nested under input
+	claude := &RunStats{InputTokens: 1000, CachedInputTokens: 200}
+	if got := claude.ContextTokens(); got != 1000 {
+		t.Errorf("claude context = %d, want 1000", got)
+	}
+
+	// OpenCode-style: cache additive
+	oc := &RunStats{InputTokens: 165, CachedInputTokens: 19200}
+	if got := oc.ContextTokens(); got != 165+19200 {
+		t.Errorf("opencode context = %d, want %d", got, 165+19200)
+	}
+
+	// no cache
+	none := &RunStats{InputTokens: 500}
+	if got := none.ContextTokens(); got != 500 {
+		t.Errorf("no cache context = %d, want 500", got)
+	}
+
+	// zero tokens
+	zero := &RunStats{}
+	if got := zero.ContextTokens(); got != 0 {
+		t.Errorf("zero context = %d, want 0", got)
+	}
+}
+
+func TestFormatContextUsage(t *testing.T) {
+	// no context
+	zero := &RunStats{}
+	if got := formatContextUsage(zero); got != "" {
+		t.Errorf("zero usage = %q, want empty", got)
+	}
+
+	// unknown context window → raw number
+	noModel := &RunStats{InputTokens: 1000, CachedInputTokens: 200, Model: ""}
+	if got := formatContextUsage(noModel); got != "ctx 1000" {
+		t.Errorf("no model = %q", got)
+	}
+
+	// known context window → percentage
+	withModel := &RunStats{InputTokens: 50000, CachedInputTokens: 0, Model: "claude-sonnet-4-20250514"}
+	if got := formatContextUsage(withModel); got != "ctx 25.0%" {
+		t.Errorf("known model = %q", got)
+	}
+}

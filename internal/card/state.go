@@ -91,6 +91,16 @@ func (s *RunStats) TotalTokens() int {
 	return total
 }
 
+// ContextTokens returns the total number of context tokens (input + cache).
+// For Claude-style (cache nested in input) this equals InputTokens.
+// For OpenCode-style (additive cache) this is InputTokens + CachedInputTokens.
+func (s *RunStats) ContextTokens() int {
+	if s.CachedInputTokens > s.InputTokens {
+		return s.InputTokens + s.CachedInputTokens
+	}
+	return s.InputTokens
+}
+
 // RunState is the full presentation state of one agent run.
 type RunState struct {
 	Blocks    []Block

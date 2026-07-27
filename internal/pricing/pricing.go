@@ -9,9 +9,10 @@ import (
 )
 
 type Rates struct {
-	Input     float64
-	Output    float64
-	CacheRead float64
+	Input         float64
+	Output        float64
+	CacheRead     float64
+	ContextWindow int // model context window in tokens, 0 = unknown
 }
 
 type entry struct {
@@ -27,21 +28,21 @@ func register(prefix string, r Rates, peakMul float64) {
 }
 
 func init() {
-	register("deepseek/deepseek-chat", Rates{Input: 0.5, Output: 2.0, CacheRead: 0.1}, 2.0)
-	register("deepseek-chat", Rates{Input: 0.5, Output: 2.0, CacheRead: 0.1}, 2.0)
-	register("deepseek/deepseek-reasoner", Rates{Input: 1.0, Output: 4.0, CacheRead: 0.25}, 2.0)
-	register("deepseek-reasoner", Rates{Input: 1.0, Output: 4.0, CacheRead: 0.25}, 2.0)
-	register("deepseek/deepseek-r1", Rates{Input: 1.0, Output: 4.0, CacheRead: 0.25}, 2.0)
+	register("deepseek/deepseek-chat", Rates{Input: 0.5, Output: 2.0, CacheRead: 0.1, ContextWindow: 131072}, 2.0)
+	register("deepseek-chat", Rates{Input: 0.5, Output: 2.0, CacheRead: 0.1, ContextWindow: 131072}, 2.0)
+	register("deepseek/deepseek-reasoner", Rates{Input: 1.0, Output: 4.0, CacheRead: 0.25, ContextWindow: 131072}, 2.0)
+	register("deepseek-reasoner", Rates{Input: 1.0, Output: 4.0, CacheRead: 0.25, ContextWindow: 131072}, 2.0)
+	register("deepseek/deepseek-r1", Rates{Input: 1.0, Output: 4.0, CacheRead: 0.25, ContextWindow: 131072}, 2.0)
 
-	register("claude-sonnet-4-", Rates{Input: 22.0, Output: 110.0, CacheRead: 2.2}, 0)
-	register("claude-sonnet-4", Rates{Input: 22.0, Output: 110.0, CacheRead: 2.2}, 0)
-	register("claude-3.5-sonnet", Rates{Input: 22.0, Output: 110.0, CacheRead: 2.2}, 0)
-	register("claude-3-haiku", Rates{Input: 5.8, Output: 29.2, CacheRead: 0.6}, 0)
-	register("claude-opus-4-", Rates{Input: 110.0, Output: 440.0, CacheRead: 11.0}, 0)
-	register("claude-opus-4", Rates{Input: 110.0, Output: 440.0, CacheRead: 11.0}, 0)
+	register("claude-sonnet-4-", Rates{Input: 22.0, Output: 110.0, CacheRead: 2.2, ContextWindow: 200000}, 0)
+	register("claude-sonnet-4", Rates{Input: 22.0, Output: 110.0, CacheRead: 2.2, ContextWindow: 200000}, 0)
+	register("claude-3.5-sonnet", Rates{Input: 22.0, Output: 110.0, CacheRead: 2.2, ContextWindow: 200000}, 0)
+	register("claude-3-haiku", Rates{Input: 5.8, Output: 29.2, CacheRead: 0.6, ContextWindow: 200000}, 0)
+	register("claude-opus-4-", Rates{Input: 110.0, Output: 440.0, CacheRead: 11.0, ContextWindow: 200000}, 0)
+	register("claude-opus-4", Rates{Input: 110.0, Output: 440.0, CacheRead: 11.0, ContextWindow: 200000}, 0)
 
-	register("gpt-4o-mini", Rates{Input: 1.1, Output: 4.4, CacheRead: 0.55}, 0)
-	register("gpt-4o", Rates{Input: 18.3, Output: 73.0, CacheRead: 9.1}, 0)
+	register("gpt-4o-mini", Rates{Input: 1.1, Output: 4.4, CacheRead: 0.55, ContextWindow: 131072}, 0)
+	register("gpt-4o", Rates{Input: 18.3, Output: 73.0, CacheRead: 9.1, ContextWindow: 131072}, 0)
 
 	// Sort by prefix length descending so longer (more specific) prefixes match first.
 	sort.Slice(registry, func(i, j int) bool {
@@ -106,6 +107,14 @@ func Calculate(model string, inputTokens, outputTokens, cachedInputTokens int, n
 	}
 
 	return cost, label
+}
+
+func ContextWindow(model string) int {
+	r, _, ok := Lookup(model)
+	if !ok {
+		return 0
+	}
+	return r.ContextWindow
 }
 
 func FormatCNY(cost float64) string {
