@@ -53,10 +53,29 @@ type AppConfig struct {
 	Tenant    TenantBrand `json:"tenant,omitempty"`
 }
 
+// ChatAccess is the invite whitelist for who may drive the bot
+// (ADR-0013, aligned with original bridge profile.access).
+// Empty slices mean nobody from that list — never "open to all"
+// (except when owner cannot be resolved yet; see policy fail-open).
+type ChatAccess struct {
+	// OwnerOpenID caches the Feishu app owner open_id so a temporary
+	// application API failure does not lock the real owner out.
+	OwnerOpenID string `json:"ownerOpenId,omitempty"`
+	// AllowedUsers may DM the bot (open_id).
+	AllowedUsers []string `json:"allowedUsers,omitempty"`
+	// AllowedChats are group chat_ids where any member may use the bot.
+	AllowedChats []string `json:"allowedChats,omitempty"`
+	// Admins may DM, use any group, and run /invite /remove (open_id).
+	Admins []string `json:"admins,omitempty"`
+}
+
 // Profile is one bot instance's full configuration.
 type Profile struct {
 	AgentKind AgentKind `json:"agentKind"`
 	App       AppConfig `json:"app"`
+
+	// Access is chat access control (owner is not listed; resolved at runtime).
+	Access ChatAccess `json:"access,omitempty"`
 
 	Workspaces struct {
 		Default string `json:"default,omitempty"`

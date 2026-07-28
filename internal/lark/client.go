@@ -317,6 +317,55 @@ func (c *Client) GetBotInfo(ctx context.Context) (*BotInfo, error) {
 	return &BotInfo{OpenID: out.Bot.OpenID, AppName: out.Bot.AppName}, nil
 }
 
+// GetAppOwnerOpenID returns the Feishu/Lark application owner's open_id
+// (GET /open-apis/application/v6/applications/{app_id}). Used for chat
+// access control (ADR-0013). Requires application:application:self_manage
+// or equivalent scope on the app.
+func (c *Client) GetAppOwnerOpenID(ctx context.Context) (string, error) {
+	token, err := c.tenantAccessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	u := fmt.Sprintf("%s/open-apis/application/v6/applications/%s?lang=zh_cn&user_id_type=open_id",
+		c.BaseURL, url.PathEscape(c.AppID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			App struct {
+				CreatorID string `json:"creator_id"`
+				Owner     struct {
+					OwnerID string `json:"owner_id"`
+				} `json:"owner"`
+			} `json:"app"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if out.Code != 0 {
+		return "", apiErr("application.get", out.Code, out.Msg)
+	}
+	id := out.Data.App.Owner.OwnerID
+	if id == "" {
+		id = out.Data.App.CreatorID
+	}
+	if id == "" {
+		return "", fmt.Errorf("application.get: owner_id empty")
+	}
+	return id, nil
+}
+
 // AddMessageReaction adds an emoji reaction to a message (e.g. "Typing").
 // Returns the reaction ID on success. Errors are returned but callers should
 // tolerate failure gracefully — a missing decoration must not break the flow.
