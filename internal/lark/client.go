@@ -307,6 +307,42 @@ func (c *Client) GetBotInfo(ctx context.Context) (*BotInfo, error) {
 	return &BotInfo{OpenID: out.Bot.OpenID, AppName: out.Bot.AppName}, nil
 }
 
+// AddMessageReaction adds an emoji reaction to a message (e.g. "Typing").
+// Returns the reaction ID on success. Errors are returned but callers should
+// tolerate failure gracefully — a missing decoration must not break the flow.
+func (c *Client) AddMessageReaction(ctx context.Context, messageID, emojiType string) (string, error) {
+	resp, err := c.SDK.Im.V1.MessageReaction.Create(ctx,
+		larkim.NewCreateMessageReactionReqBuilder().
+			MessageId(messageID).
+			Body(larkim.NewCreateMessageReactionReqBodyBuilder().
+				ReactionType(larkim.NewEmojiBuilder().EmojiType(emojiType).Build()).
+				Build()).
+			Build())
+	if err != nil {
+		return "", err
+	}
+	if !resp.Success() {
+		return "", apiErr("messageReaction.create", resp.Code, resp.Msg)
+	}
+	return str(resp.Data.ReactionId), nil
+}
+
+// DeleteMessageReaction removes a previously-added reaction.
+func (c *Client) DeleteMessageReaction(ctx context.Context, messageID, reactionID string) error {
+	resp, err := c.SDK.Im.V1.MessageReaction.Delete(ctx,
+		larkim.NewDeleteMessageReactionReqBuilder().
+			MessageId(messageID).
+			ReactionId(reactionID).
+			Build())
+	if err != nil {
+		return err
+	}
+	if !resp.Success() {
+		return apiErr("messageReaction.delete", resp.Code, resp.Msg)
+	}
+	return nil
+}
+
 // GetMessage fetches a single message's raw content by ID.
 // Returns the message type, text content, and any error.
 func (c *Client) GetMessage(ctx context.Context, messageID string) (msgType, content string, err error) {

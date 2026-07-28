@@ -41,6 +41,12 @@ type pendingReply struct {
 	promptMsgID   string // the "please reply" p2p message ID
 }
 
+// workingReaction tracks a Typing reaction added as instant ack.
+type workingReaction struct {
+	messageID  string
+	reactionID string
+}
+
 // Bridge bundles every dependency of the message pipeline.
 type Bridge struct {
 	Paths       config.Paths
@@ -63,6 +69,9 @@ type Bridge struct {
 
 	pendingRepliesMu sync.Mutex
 	pendingReplies   map[string]*pendingReply // operatorID → pending (quick_reply)
+
+	reactionsMu sync.Mutex
+	reactions   map[string]workingReaction // scope → working reaction
 
 	escalationsMu sync.Mutex
 	escalations   map[string]*escalation // p2p chatID → 进行中的建群升级（ADR-0006）
@@ -190,6 +199,9 @@ func (b *Bridge) HandleMessage(event *larkimEvent) {
 	log.Printf("[intake] chat=%s scope=%s type=%s chars=%d resources=%d",
 		msg.ChatID, msg.Scope(), msg.RawType, len(content), len(msg.Resources))
 	b.pending.Push(msg.Scope(), msg)
+	if id := b.addWorkingReaction(msg.MessageID); id != "" {
+		b.setScopeReaction(msg.Scope(), msg.MessageID, id)
+	}
 }
 
 func (b *Bridge) botOpenID() string {
@@ -303,6 +315,7 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 		run.Stop()
 		return fmt.Errorf("创建回复卡片失败: %w", err)
 	}
+	b.clearScopeReaction(scope)
 	b.runsMu.Lock()
 	b.cardScopes[stream.MessageID()] = scope
 	b.runsMu.Unlock()
