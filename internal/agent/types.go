@@ -156,6 +156,8 @@ func NewAdapter(kind config.AgentKind) Adapter {
 		return NewPiAdapter("pi")
 	case config.AgentOpenCode:
 		return NewOpenCodeAdapter("opencode")
+	case config.AgentGrok:
+		return &GrokAdapter{binary: "grok"}
 	default:
 		return &ClaudeAdapter{binary: "claude"}
 	}

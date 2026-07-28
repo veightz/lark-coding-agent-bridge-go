@@ -82,7 +82,8 @@ func assertEventEqual(t *testing.T, idx int, got, want Event) {
 		t.Errorf("event %d: tool fields mismatch: %+v vs %+v", idx, got, want)
 	}
 	if got.InputTokens != want.InputTokens || got.OutputTokens != want.OutputTokens ||
-		got.CachedInputTokens != want.CachedInputTokens || got.CostUSD != want.CostUSD {
+		got.CachedInputTokens != want.CachedInputTokens || got.ReasoningOutputTokens != want.ReasoningOutputTokens ||
+		got.CostUSD != want.CostUSD {
 		t.Errorf("event %d: usage mismatch: %+v vs %+v", idx, got, want)
 	}
 	if got.TerminationReason != want.TerminationReason {
@@ -99,6 +100,69 @@ func assertEventEqual(t *testing.T, idx int, got, want Event) {
 				t.Errorf("event %d: input[%s] = %v, want %v", idx, k, gotMap[k], v)
 			}
 		}
+	}
+}
+
+func TestTranslateGrokLine(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want []Event
+	}{
+		{
+			name: "thought",
+			line: `{"type":"thought","data":"thinking about it"}`,
+			want: []Event{{Type: EventThinking, Delta: "thinking about it"}},
+		},
+		{
+			name: "text",
+			line: `{"type":"text","data":"Hello, world!"}`,
+			want: []Event{{Type: EventText, Delta: "Hello, world!"}},
+		},
+		{
+			name: "end with usage",
+			line: `{"type":"end","stopReason":"EndTurn","sessionId":"s1","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":3,"reasoning_tokens":7},"total_cost_usd":0.01}`,
+			want: []Event{
+				{Type: EventSystem, SessionID: "s1"},
+				{Type: EventUsage, InputTokens: 10, OutputTokens: 5, CachedInputTokens: 3, ReasoningOutputTokens: 7, CostUSD: 0.01},
+				{Type: EventDone, SessionID: "s1", TerminationReason: TermNormal},
+			},
+		},
+		{
+			name: "end without usage",
+			line: `{"type":"end","stopReason":"Stop","sessionId":"s2"}`,
+			want: []Event{
+				{Type: EventSystem, SessionID: "s2"},
+				{Type: EventDone, SessionID: "s2", TerminationReason: TermNormal},
+			},
+		},
+		{
+			name: "empty thought",
+			line: `{"type":"thought"}`,
+			want: nil,
+		},
+		{
+			name: "garbage",
+			line: `not json`,
+			want: nil,
+		},
+		{
+			name: "unknown type",
+			line: `{"type":"unknown","data":"x"}`,
+			want: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := translateGrokLine([]byte(tc.line))
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d events, want %d: %+v", len(got), len(tc.want), got)
+			}
+			for i, want := range tc.want {
+				assertEventEqual(t, i, got[i], want)
+			}
+		})
 	}
 }
 
