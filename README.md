@@ -40,7 +40,7 @@
 
 ## 与原版的差异
 
-本复刻覆盖核心链路，以下原版功能**尚未实现**：后台守护进程服务管理、访问控制（`/invite` 等）、云文档评论、COT 过程消息、`/resume`、`/config` 交互卡片、`/doctor`、卡片回调签名、secrets 加密存储（App Secret 明文存于 `config.json`，文件权限 0600）。Codex 无结构化反问 hook，不接管 AskUserQuestion 类交互（与 botmux 一致）。
+本复刻覆盖核心链路，以下原版功能**尚未实现**：后台守护进程服务管理、云文档评论、COT 过程消息、`/resume`、`/config` 交互卡片、`/doctor`、卡片回调签名、`/invite all group` 批量拉群、secrets 加密存储（App Secret 明文存于 `config.json`，文件权限 0600）。**访问控制**（owner + `/invite`/`/remove`）已实现（ADR-0013）。Codex 无结构化反问 hook，不接管 AskUserQuestion 类交互（与 botmux 一致）。
 
 设计与实现文档见 [`docs/design.html`](docs/design.html)（技术设计，含架构/时序/状态机图）与 [`docs/implementation.html`](docs/implementation.html)（关键结构与方法）。
 
@@ -100,9 +100,22 @@ go build -o bin/lark-coding-agent-bridge ./cmd/lark-coding-agent-bridge
 
 设置 `LARK_CODING_BRIDGE_HOME=/path/to/state` 可迁移全部本地状态。
 
+## 聊天访问控制（ADR-0013）
+
+默认**私有**：只有飞书应用 owner 能用 bot。其他人消息静默忽略。
+
+| 名单 | 作用 | 命令 |
+|------|------|------|
+| owner | 应用创建者，任意私聊/群 | 自动解析 |
+| `access.allowedUsers` | 可私聊 | `/invite user @某人` |
+| `access.admins` | 私聊 + 任意群 + 管名单 | `/invite admin @某人` |
+| `access.allowedChats` | 该群内**所有人**可用 | 群里 `/invite group` |
+
+配置写在 `config.json` 对应 profile 的 `access` 字段；也可用 `/remove …` 移除。
+
 ## 权限模式与看门狗
 
-profile 配置中的 `permissions.defaultAccess` 控制 agent 权限（`full` 默认 / `workspace` / `read-only`，对 claude/codex 生效）；`preferences.idleTimeoutMinutes` 控制 run 级 idle 看门狗（默认 10，负值关闭）。
+profile 配置中的 `permissions.defaultAccess` 控制 agent 工具权限（`full` 默认 / `workspace` / `read-only`）；`preferences.idleTimeoutMinutes` 控制 run 级 idle 看门狗（默认 10，负值关闭）。
 
 ## 开发
 

@@ -49,7 +49,8 @@ internal/
   ask/          模型反问 broker + 飞书 ask 卡片 + Claude hook IPC（ADR-0008，对标 botmux）
   lark/         OpenAPI 封装（WS、REST、cardkit、附件）
   card/         运行状态机 + 卡片渲染 + 流式更新
-  bridge/       消息路由、防抖队列、斜杠命令、显式建群（/new chat · /open）、ask 接线
+  bridge/       消息路由、防抖队列、斜杠命令、访问控制入口、显式建群、ask 接线
+  policy/       聊天访问决策（owner / invite 名单，ADR-0013）
   media/        附件下载缓存
   supervisor/   WS 连接监督（探测 + 强制重建）
   registry/     进程注册表（dashboard 数据源）
@@ -72,6 +73,7 @@ docs/
 
 ## 当前未实现（不要误以为是 bug）
 
-后台服务管理、访问控制（/invite）、云文档评论、COT 消息、/resume、/config 卡片、secrets 加密；
+后台服务管理、云文档评论、COT 消息、/resume、/config 卡片、secrets 加密、`/invite all group` 批量列举；
 Codex 无结构化反问 hook（与 botmux 一致）；Pi 的 notify/setStatus 等 fire-and-forget UI 不弹卡；Claude/Codex 工具级权限仍走 access mode（不做飞书审批卡）；OpenCode 工具权限已接管（ADR-0011）。
+访问控制（owner + `/invite`/`/remove` 白名单）见 ADR-0013。
 详见 `docs/adr/` 与 README「与原版的差异」。

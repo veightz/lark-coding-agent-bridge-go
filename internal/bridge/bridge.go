@@ -19,6 +19,7 @@ import (
 	"lark-coding-agent-bridge-go/internal/config"
 	"lark-coding-agent-bridge-go/internal/lark"
 	"lark-coding-agent-bridge-go/internal/media"
+	"lark-coding-agent-bridge-go/internal/policy"
 	"lark-coding-agent-bridge-go/internal/state"
 )
 
@@ -78,6 +79,12 @@ type Bridge struct {
 	AskURL      string // loopback base URL for hooks (empty if not started)
 	routesMu    sync.Mutex
 	scopeRoutes map[string]ask.Route
+
+	// Chat access owner (ADR-0013); refreshed from application OpenAPI.
+	ownerMu    sync.Mutex
+	botOwnerID string
+	ownerState policy.OwnerState
+	ownerError string
 }
 
 // NewBridge wires the pipeline. Call HandleMessage / HandleCardAction.
@@ -145,6 +152,11 @@ func (b *Bridge) HandleMessage(event *larkimEvent) {
 	}
 	// Never react to our own messages (loop guard).
 	if msg.SenderID != "" && msg.SenderID == b.botOpenID() {
+		return
+	}
+
+	// Access control (ADR-0013): default private — only owner / invite lists.
+	if !b.checkMessageAccess(msg) {
 		return
 	}
 

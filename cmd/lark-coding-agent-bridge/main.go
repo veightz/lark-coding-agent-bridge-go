@@ -146,6 +146,8 @@ func run(profileName, agentKind, workspace, appID string) error {
 	if err != nil {
 		return err
 	}
+	// Chat access owner (ADR-0013): resolve Feishu app owner for whitelist.
+	br.StartOwnerRefresh()
 
 	// Ask IPC + Claude hook install (ADR-0008). Best-effort: failure only
 	// disables Claude AskUserQuestion takeover, not the whole bridge.

@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"sort"
@@ -11,6 +12,8 @@ import (
 	"lark-coding-agent-bridge-go/internal/agent"
 	"lark-coding-agent-bridge-go/internal/ask"
 	"lark-coding-agent-bridge-go/internal/card"
+	"lark-coding-agent-bridge-go/internal/config"
+	"lark-coding-agent-bridge-go/internal/policy"
 	"lark-coding-agent-bridge-go/internal/state"
 )
 
@@ -29,9 +32,13 @@ const helpText = `**可用命令**
 - /unbind — 解除当前聊天的会话绑定
 - /stop — 停止当前运行
 - /status — 查看 profile、agent、工作目录和会话状态
+- /invite user @某人 — 允许对方私聊 bot（owner/admin）
+- /invite admin @某人 — 添加管理员（owner/admin）
+- /invite group — 开放当前群给群内所有人（owner/admin）
+- /remove user|admin|group — 移出白名单（owner/admin）
 - /help — 显示本帮助
 
-直接发消息即可与本地 agent 对话；群里需要 @我。图片和文件会下载到本地供 agent 使用。`
+默认仅应用 owner 可用；其他人需被 /invite。群里需要 @我（除非开启 autoReply）。`
 
 // handleCommand dispatches slash commands. Commands run outside the
 // pending queue so /stop and /new can interrupt an in-flight run.
@@ -104,6 +111,12 @@ func (b *Bridge) handleCommand(msg *Message, content string) {
 
 	case "/status":
 		reply(b.statusText(scope))
+
+	case "/invite":
+		b.handleInvite(msg, args, reply)
+
+	case "/remove":
+		b.handleRemove(msg, args, reply)
 
 	case "/help":
 		reply(helpText)
@@ -215,6 +228,15 @@ func (b *Bridge) statusText(scope string) string {
 		// 私聊主时间线每条消息是新话题/新会话；话题内才会续聊。
 		sb.WriteString("- 会话: （无；私聊主时间线下一条新建，话题内续聊）\n")
 	}
+	oc := b.ownerControls()
+	acc := b.policyAccess()
+	owner := oc.BotOwnerID
+	if owner == "" {
+		owner = "（未解析，state=" + string(oc.OwnerState) + "）"
+	}
+	sb.WriteString("- access owner: `" + owner + "`\n")
+	sb.WriteString(fmt.Sprintf("- access lists: users=%d chats=%d admins=%d\n",
+		len(acc.AllowedUsers), len(acc.AllowedChats), len(acc.Admins)))
 	b.runsMu.Lock()
 	_, running := b.runs[scope]
 	b.runsMu.Unlock()
@@ -224,6 +246,206 @@ func (b *Bridge) statusText(scope string) string {
 		sb.WriteString("- 运行状态: 空闲\n")
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// requireAdmin replies and returns false when sender cannot manage access.
+func (b *Bridge) requireAdmin(msg *Message, reply func(string)) bool {
+	d := policy.CanRunAdminCommand(b.policyAccess(), b.ownerControls(), msg.SenderID)
+	if d.OK {
+		return true
+	}
+	reply("❌ 仅应用 owner 或管理员可执行此命令。")
+	return false
+}
+
+func (b *Bridge) handleInvite(msg *Message, args []string, reply func(string)) {
+	if !b.requireAdmin(msg, reply) {
+		return
+	}
+	tokens := make([]string, 0, len(args))
+	for _, a := range args {
+		tokens = append(tokens, strings.ToLower(a))
+	}
+
+	// /invite all group — list API not wired; guide user.
+	hasAll, hasGroup := false, false
+	for _, t := range tokens {
+		if t == "all" {
+			hasAll = true
+		}
+		if t == "group" {
+			hasGroup = true
+		}
+	}
+	if hasAll && hasGroup {
+		reply("当前版本请到目标群内发 `/invite group` 逐个加入（批量拉取 bot 所在群尚未接入）。")
+		return
+	}
+
+	kind := ""
+	for _, t := range tokens {
+		switch t {
+		case "user", "admin", "group":
+			kind = t
+		}
+	}
+	if kind == "" {
+		reply("用法：\n" +
+			"• `/invite user @某人` — 加入允许私聊\n" +
+			"• `/invite admin @某人` — 加入管理员\n" +
+			"• `/invite group` — 把当前群加入响应群名单")
+		return
+	}
+
+	if kind == "group" {
+		if msg.ChatType == "p2p" {
+			reply("❌ `/invite group` 只能在群里发。")
+			return
+		}
+		already := false
+		if err := b.mutateAccess(func(a *config.ChatAccess) {
+			next, added := addUnique(a.AllowedChats, msg.ChatID)
+			a.AllowedChats = next
+			already = !added
+		}); err != nil {
+			reply("❌ 保存失败：" + err.Error())
+			return
+		}
+		if already {
+			reply("✅ 当前群已在白名单里，无需重复添加。")
+			return
+		}
+		reply("✅ 已把当前群（`" + msg.ChatID + "`）加入响应群名单。")
+		return
+	}
+
+	targets := mentionUserTargets(msg)
+	if len(targets) == 0 {
+		reply("❌ 没检测到 @ 的用户。请像：`/invite " + kind + " @某人`（@ 用户不是 @ bot）。")
+		return
+	}
+	var added, already []string
+	err := b.mutateAccess(func(a *config.ChatAccess) {
+		list := a.AllowedUsers
+		if kind == "admin" {
+			list = a.Admins
+		}
+		for _, t := range targets {
+			next, wasAdded := addUnique(list, t.OpenID)
+			list = next
+			name := displayName(t)
+			if wasAdded {
+				added = append(added, name)
+			} else {
+				already = append(already, name)
+			}
+		}
+		if kind == "admin" {
+			a.Admins = list
+		} else {
+			a.AllowedUsers = list
+		}
+	})
+	if err != nil {
+		reply("❌ 保存失败：" + err.Error())
+		return
+	}
+	label := "用户白名单"
+	if kind == "admin" {
+		label = "管理员"
+	}
+	var parts []string
+	if len(added) > 0 {
+		parts = append(parts, "✅ 已把 "+strings.Join(added, "、")+" 加入"+label+"。")
+	}
+	if len(already) > 0 {
+		parts = append(parts, strings.Join(already, "、")+" 已在"+label+"里，跳过。")
+	}
+	reply(strings.Join(parts, "\n"))
+}
+
+func (b *Bridge) handleRemove(msg *Message, args []string, reply func(string)) {
+	if !b.requireAdmin(msg, reply) {
+		return
+	}
+	kind := ""
+	for _, a := range args {
+		switch strings.ToLower(a) {
+		case "user", "admin", "group":
+			kind = strings.ToLower(a)
+		}
+	}
+	if kind == "" {
+		reply("用法：\n" +
+			"• `/remove user @某人`\n" +
+			"• `/remove admin @某人`\n" +
+			"• `/remove group` — 把当前群移出响应名单")
+		return
+	}
+	if kind == "group" {
+		if msg.ChatType == "p2p" {
+			reply("`/remove group` 请在要移除的群里发。")
+			return
+		}
+		missing := false
+		if err := b.mutateAccess(func(a *config.ChatAccess) {
+			next, removed := removeID(a.AllowedChats, msg.ChatID)
+			a.AllowedChats = next
+			missing = !removed
+		}); err != nil {
+			reply("❌ 保存失败：" + err.Error())
+			return
+		}
+		if missing {
+			reply("✅ 当前群本来就不在响应名单里。")
+			return
+		}
+		reply("✅ 已把当前群移出响应群名单。")
+		return
+	}
+	targets := mentionUserTargets(msg)
+	if len(targets) == 0 {
+		reply("请 @ 上要移除的人，例如：`/remove " + kind + " @某人`。")
+		return
+	}
+	var removed, notThere []string
+	err := b.mutateAccess(func(a *config.ChatAccess) {
+		list := a.AllowedUsers
+		if kind == "admin" {
+			list = a.Admins
+		}
+		for _, t := range targets {
+			next, was := removeID(list, t.OpenID)
+			list = next
+			name := displayName(t)
+			if was {
+				removed = append(removed, name)
+			} else {
+				notThere = append(notThere, name)
+			}
+		}
+		if kind == "admin" {
+			a.Admins = list
+		} else {
+			a.AllowedUsers = list
+		}
+	})
+	if err != nil {
+		reply("❌ 保存失败：" + err.Error())
+		return
+	}
+	label := "用户白名单"
+	if kind == "admin" {
+		label = "管理员"
+	}
+	var parts []string
+	if len(removed) > 0 {
+		parts = append(parts, "✅ 已把 "+strings.Join(removed, "、")+" 移出"+label+"。")
+	}
+	if len(notThere) > 0 {
+		parts = append(parts, strings.Join(notThere, "、")+" 本来就不在"+label+"里。")
+	}
+	reply(strings.Join(parts, "\n"))
 }
 
 // validateWorkspace checks a directory is usable as an agent cwd and
@@ -267,6 +489,9 @@ type CardActionResult struct {
 
 // HandleCardAction processes card button callbacks (⏹ stop / 🔄 refresh / ask_*).
 func (b *Bridge) HandleCardAction(chatID, messageID, operatorID string, value map[string]any) CardActionResult {
+	if !b.checkOperatorAccess(chatID, operatorID) {
+		return CardActionResult{ToastKind: "error", Toast: "无权限操作"}
+	}
 	cmd, _ := value["cmd"].(string)
 	switch cmd {
 	case "stop":

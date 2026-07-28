@@ -87,6 +87,7 @@
   <li><b>流式卡片</b>：CardKit 2.0，400ms 节流全卡更新，飞书客户端呈现打字机效果。</li>
   <li><b>模型反问卡片</b>（ADR-0008，对标 <a href="https://github.com/deepcoldy/botmux">botmux</a>）：Claude <code>AskUserQuestion</code> / OpenCode <code>question</code> / Pi <code>extension_ui_request</code> 在飞书弹出交互卡片，用户点选（input/editor 可文字 freeform）后回填 agent；pending ask 期间暂停 idle 看门狗。</li>
   <li><b>OpenCode 工具权限</b>（ADR-0011）：默认 <code>full</code> 自动 <code>always</code> 放行；<code>workspace</code>/<code>read-only</code> 时 SSE <code>permission.asked</code> → 飞书卡 → <code>POST /permission/{id}/reply</code>。</li>
+  <li><b>聊天访问白名单</b>（ADR-0013）：默认仅应用 owner；<code>/invite user|admin|group</code> 管理名单；陌生人静默丢弃。</li>
   <li><b>三层健壮性</b>：SDK 重连 + supervisor 半死连接检测 + run 级 idle 看门狗；opencode 另加 SSE 帧看门狗（75s 无帧强制重连）与 3s 轮询回补（以服务端消息列表对账，丢帧文本自动补回）。</li>
   <li><b>运维闭环</b>：进程注册表 + dashboard + 自升级。</li>
 </ul>
