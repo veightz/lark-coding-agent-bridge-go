@@ -46,16 +46,22 @@ func apiErr(op string, code int, msg string) error {
 	return fmt.Errorf("%s failed: code=%d msg=%s", op, code, msg)
 }
 
-// SendText sends a plain text message to a chat; replyTo threads it under a message.
-func (c *Client) SendText(ctx context.Context, chatID, text, replyTo string) (string, error) {
+// SendText sends a plain text message to a chat.
+// When replyTo is set, the message is a reply to that message_id.
+// inThread=true sets reply_in_thread so Feishu creates/continues a topic
+// under the root message (used for p2p so bot output stays in a thread).
+func (c *Client) SendText(ctx context.Context, chatID, text, replyTo string, inThread bool) (string, error) {
 	content, _ := json.Marshal(map[string]string{"text": text})
 	if replyTo != "" {
+		body := larkim.NewReplyMessageReqBodyBuilder().
+			MsgType("text").
+			Content(string(content))
+		if inThread {
+			body = body.ReplyInThread(true)
+		}
 		resp, err := c.SDK.Im.V1.Message.Reply(ctx, larkim.NewReplyMessageReqBuilder().
 			MessageId(replyTo).
-			Body(larkim.NewReplyMessageReqBodyBuilder().
-				MsgType("text").
-				Content(string(content)).
-				Build()).
+			Body(body.Build()).
 			Build())
 		if err != nil {
 			return "", err
@@ -152,18 +158,22 @@ type cardRefData struct {
 }
 
 // SendCardByReference sends an interactive message referencing a card_id.
-func (c *Client) SendCardByReference(ctx context.Context, chatID, cardID, replyTo string) (string, error) {
+// inThread=true uses reply_in_thread (topic form) when replyTo is set.
+func (c *Client) SendCardByReference(ctx context.Context, chatID, cardID, replyTo string, inThread bool) (string, error) {
 	content, _ := json.Marshal(cardRef{
 		Type: "card",
 		Data: cardRefData{CardID: cardID},
 	})
 	if replyTo != "" {
+		body := larkim.NewReplyMessageReqBodyBuilder().
+			MsgType("interactive").
+			Content(string(content))
+		if inThread {
+			body = body.ReplyInThread(true)
+		}
 		resp, err := c.SDK.Im.V1.Message.Reply(ctx, larkim.NewReplyMessageReqBuilder().
 			MessageId(replyTo).
-			Body(larkim.NewReplyMessageReqBodyBuilder().
-				MsgType("interactive").
-				Content(string(content)).
-				Build()).
+			Body(body.Build()).
 			Build())
 		if err != nil {
 			return "", err

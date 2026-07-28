@@ -181,7 +181,7 @@ func (b *Bridge) HandleMessage(event *larkimEvent) {
 		if b.tryAnswerAskWithText(msg.ChatID, msg.SenderID, content) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			_, _ = b.Lark.SendText(ctx, msg.ChatID, "✅ 已收到你的回答，agent 继续中…", msg.MessageID)
+			_, _ = b.Lark.SendText(ctx, msg.ChatID, "✅ 已收到你的回答，agent 继续中…", msg.MessageID, msg.ReplyInThread())
 			return
 		}
 	}
@@ -196,8 +196,8 @@ func (b *Bridge) HandleMessage(event *larkimEvent) {
 		return
 	}
 
-	log.Printf("[intake] chat=%s scope=%s type=%s chars=%d resources=%d",
-		msg.ChatID, msg.Scope(), msg.RawType, len(content), len(msg.Resources))
+	log.Printf("[intake] chat=%s type=%s scope=%s root=%s thread=%s chars=%d resources=%d",
+		msg.ChatID, msg.ChatType, msg.Scope(), msg.TopicRootID(), msg.ThreadID, len(content), len(msg.Resources))
 	b.pending.Push(msg.Scope(), msg)
 	if id := b.addWorkingReaction(msg.MessageID); id != "" {
 		b.setScopeReaction(msg.Scope(), msg.MessageID, id)
@@ -224,7 +224,7 @@ func (b *Bridge) flush(scope string, batch []*Message) {
 			chatID := batch[0].ChatID
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			_, _ = b.Lark.SendText(ctx, chatID, "⚠️ 运行失败："+err.Error(), batch[0].MessageID)
+			_, _ = b.Lark.SendText(ctx, chatID, "⚠️ 运行失败："+err.Error(), batch[0].MessageID, batch[0].ReplyInThread())
 		}
 	}()
 }
@@ -275,19 +275,25 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 		ThreadID:  sess.ThreadID,
 	}
 	// Claude AskUserQuestion hook routing (ADR-0008).
+	// Root message id: p2p 话题根（TopicRootID），便于卡片/回复挂在同一话题下。
 	if b.AskURL != "" {
+		rootMsgID := first.MessageID
+		if r := first.TopicRootID(); r != "" {
+			rootMsgID = r
+		}
 		runOpts.Env = map[string]string{
 			ask.EnvAskURL:           b.AskURL,
 			ask.EnvAskScope:         scope,
 			ask.EnvAskChatID:        first.ChatID,
-			ask.EnvAskRootMessageID: first.MessageID,
+			ask.EnvAskRootMessageID: rootMsgID,
 			ask.EnvAskProfile:       b.ProfileName,
 		}
 		if settings := ask.ClaudeSettingsPath(b.Paths, b.ProfileName); settings != "" {
 			runOpts.ExtraArgs = []string{"--settings", settings}
 		}
 	}
-	b.SetScopeRoute(scope, first.ChatID, first.MessageID)
+	inThread := first.ReplyInThread()
+	b.SetScopeRoute(scope, first.ChatID, first.MessageID, inThread)
 	defer b.ClearScopeRoute(scope)
 
 	run, err := b.Agent.Run(runOpts)
@@ -296,8 +302,16 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 	}
 
 	startTime := time.Now()
-	stream := card.NewStream(b.Lark, first.ChatID, first.MessageID)
+	// 私聊：以用户原消息为根创建话题，流式卡片回复在话题内。
+	stream := card.NewStream(b.Lark, first.ChatID, first.MessageID, inThread)
 	runState := card.InitialState()
+	// 续聊时立刻带上已知 session，卡片首帧就能显示 🆔，不必等跑完。
+	if sess.SessionID != "" {
+		runState.Stats.SessionID = sess.SessionID
+	}
+	if sess.ThreadID != "" {
+		runState.Stats.ThreadID = sess.ThreadID
+	}
 
 	b.runsMu.Lock()
 	b.runs[scope] = &activeRun{run: run, scope: scope, startTime: startTime, runState: runState, stream: stream}
@@ -351,7 +365,7 @@ eventLoop:
 			if evt.Type == agent.EventAskUser {
 				// Block this loop until the user answers so idle doesn't fire
 				// mid-question; OpenCode keeps the turn open server-side.
-				b.handleAskUser(scope, first.ChatID, first.MessageID, evt)
+				b.handleAskUser(scope, first.ChatID, first.MessageID, inThread, evt)
 				continue
 			}
 			runState = runState.Reduce(evt)
@@ -411,6 +425,13 @@ eventLoop:
 		runState = runState.FinalizeIfRunning()
 	}
 	runState.Stats.DurationMs = elapsed
+	// 兜底：部分 agent 只在 Done 时带回 id，或仅写入 newSess 未进 Reduce。
+	if runState.Stats.SessionID == "" && newSess.SessionID != "" {
+		runState.Stats.SessionID = newSess.SessionID
+	}
+	if runState.Stats.ThreadID == "" && newSess.ThreadID != "" {
+		runState.Stats.ThreadID = newSess.ThreadID
+	}
 	stream.Update(card.Render(runState, card.RenderOptions{GroupChat: first.ChatType != "p2p"}))
 	stream.Finish(summaryOf(runState))
 
@@ -418,6 +439,7 @@ eventLoop:
 		b.Sessions.Set(scope, newSess)
 		// 群聊跑出 session 后自动写入 bindings.json（ADR-0007），
 		// 便于私聊 /sessions + /open 复用已有群。
+		// 私聊话题 scope 不写 bindings（recordGroupBinding 已跳过 p2p）。
 		b.recordGroupBinding(scope, first.ChatID, first.ChatType, newSess)
 	}
 	// If the run produced no session ids (e.g. it failed before init), the

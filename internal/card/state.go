@@ -78,6 +78,32 @@ type RunStats struct {
 	CostCNY               float64 // calculated cost in CNY from pricing table
 	Model                 string  // model name from EventSystem
 	UsageAvailable        bool    // true if any usage data was reported
+	// Agent conversation handles (for footer: tell runs/sessions apart).
+	SessionID string // claude / pi / opencode session id
+	ThreadID  string // codex thread id
+}
+
+// SessionRef returns a short agent-session label for display, preferring
+// SessionID then ThreadID. Empty when neither is known yet.
+func (s *RunStats) SessionRef() string {
+	if s == nil {
+		return ""
+	}
+	id := s.SessionID
+	if id == "" {
+		id = s.ThreadID
+	}
+	if id == "" {
+		return ""
+	}
+	return shortID(id, 12)
+}
+
+func shortID(id string, max int) string {
+	if max <= 0 || len(id) <= max {
+		return id
+	}
+	return id[:max]
 }
 
 // TotalTokens returns the complete token count for display.
@@ -182,6 +208,12 @@ func (s *RunState) Reduce(evt agent.Event) *RunState {
 		if evt.Model != "" {
 			next.Stats.Model = evt.Model
 		}
+		if evt.SessionID != "" {
+			next.Stats.SessionID = evt.SessionID
+		}
+		if evt.ThreadID != "" {
+			next.Stats.ThreadID = evt.ThreadID
+		}
 
 	case agent.EventUsage:
 		next.Stats.InputTokens = evt.InputTokens
@@ -213,6 +245,12 @@ func (s *RunState) Reduce(evt agent.Event) *RunState {
 	case agent.EventDone:
 		next.Blocks = closeStreamingText(s.Blocks)
 		next.Reasoning.Active = false
+		if evt.SessionID != "" {
+			next.Stats.SessionID = evt.SessionID
+		}
+		if evt.ThreadID != "" {
+			next.Stats.ThreadID = evt.ThreadID
+		}
 		switch evt.TerminationReason {
 		case agent.TermInterrupted:
 			next.Terminal = TerminalInterrupted

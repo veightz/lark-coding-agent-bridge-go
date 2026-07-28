@@ -96,7 +96,7 @@ func (b *Bridge) runEscalation(msg *Message, esc *escalation) {
 		log.Printf("[escalate] create chat failed: %v", err)
 		_, _ = b.Lark.SendText(ctx, msg.ChatID,
 			"⚠️ 自动建群失败（确认 bot 已开启 im:chat 权限），改为在私聊里处理。\n原因："+err.Error(),
-			msg.MessageID)
+			msg.MessageID, true)
 		b.pending.Push(msg.Scope(), msg)
 		return
 	}
@@ -112,7 +112,7 @@ func (b *Bridge) runEscalation(msg *Message, esc *escalation) {
 	if task := strings.TrimSpace(msg.Content); task != "" {
 		welcome.WriteString("\n\n📌 任务：" + task)
 	}
-	if _, err := b.Lark.SendText(ctx, groupID, welcome.String(), ""); err != nil {
+	if _, err := b.Lark.SendText(ctx, groupID, welcome.String(), "", false); err != nil {
 		log.Printf("[escalate] welcome message failed: %v", err)
 	}
 
@@ -173,11 +173,12 @@ func (b *Bridge) sendGroupJumpCardEx(ctx context.Context, p2pChatID, replyTo, gr
 	}
 	cardID, err := b.Lark.CreateCard(ctx, cardJSON)
 	if err == nil {
-		_, err = b.Lark.SendCardByReference(ctx, p2pChatID, cardID, replyTo)
+		// 私聊跳转卡：挂在用户原消息的话题下。
+		_, err = b.Lark.SendCardByReference(ctx, p2pChatID, cardID, replyTo, true)
 	}
 	if err != nil {
 		log.Printf("[jump-card] failed, fallback to text: %v", err)
-		_, _ = b.Lark.SendText(ctx, p2pChatID, fallback, replyTo)
+		_, _ = b.Lark.SendText(ctx, p2pChatID, fallback, replyTo, true)
 	}
 }
 
@@ -350,7 +351,7 @@ func (b *Bridge) handleNewChat(msg *Message, name string, reply func(string)) {
 		welcome.WriteString("，工作目录：`" + cwd + "`")
 	}
 	welcome.WriteString("\n\n@我 + 任意消息开始对话。")
-	if _, err := b.Lark.SendText(ctx, groupID, welcome.String(), ""); err != nil {
+	if _, err := b.Lark.SendText(ctx, groupID, welcome.String(), "", false); err != nil {
 		log.Printf("[new-chat] welcome message failed: %v", err)
 	}
 

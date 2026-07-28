@@ -138,6 +138,75 @@ func TestNormalizeImageMessage(t *testing.T) {
 	}
 }
 
+func TestReplyInThread(t *testing.T) {
+	cases := []struct {
+		chatType string
+		want     bool
+	}{
+		{"p2p", true},
+		{"group", false},
+		{"topic_group", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := ReplyInThread(tc.chatType); got != tc.want {
+			t.Errorf("ReplyInThread(%q) = %v, want %v", tc.chatType, got, tc.want)
+		}
+	}
+	p2p := &Message{ChatType: "p2p"}
+	if !p2p.ReplyInThread() {
+		t.Error("p2p Message.ReplyInThread() should be true")
+	}
+	group := &Message{ChatType: "group"}
+	if group.ReplyInThread() {
+		t.Error("group Message.ReplyInThread() should be false")
+	}
+	var nilMsg *Message
+	if nilMsg.ReplyInThread() {
+		t.Error("nil Message.ReplyInThread() should be false")
+	}
+}
+
+// ADR-0010: p2p 主时间线每条消息独立 scope；话题内用 root_id 续同一 scope。
+func TestP2PTopicScope(t *testing.T) {
+	// 主时间线首条：无 root/thread → scope 含本条 message id（新会话）
+	first := &Message{ChatID: "oc_p2p", ChatType: "p2p", MessageID: "om_root_1"}
+	if got := first.Scope(); got != "oc_p2p:om_root_1" {
+		t.Errorf("first scope = %q", got)
+	}
+	if first.TopicRootID() != "om_root_1" {
+		t.Errorf("TopicRootID = %q", first.TopicRootID())
+	}
+
+	// 同话题后续：RootID 指向首条 → 同一 scope（续聊）
+	follow := &Message{
+		ChatID: "oc_p2p", ChatType: "p2p",
+		MessageID: "om_follow_2", RootID: "om_root_1", ThreadID: "omt_topic_x",
+	}
+	if got := follow.Scope(); got != "oc_p2p:om_root_1" {
+		t.Errorf("follow scope = %q, want shared root", got)
+	}
+	if follow.Scope() != first.Scope() {
+		t.Errorf("follow scope %q != first %q", follow.Scope(), first.Scope())
+	}
+
+	// 另一条主时间线消息 → 不同 scope（新会话，不串上下文）
+	other := &Message{ChatID: "oc_p2p", ChatType: "p2p", MessageID: "om_root_9"}
+	if other.Scope() == first.Scope() {
+		t.Error("unrelated main-timeline messages must not share scope")
+	}
+
+	// 群聊：整群仍 chat 级；话题内才带 thread
+	g := &Message{ChatID: "oc_g", ChatType: "group", MessageID: "om_g1"}
+	if g.Scope() != "oc_g" {
+		t.Errorf("group scope = %q", g.Scope())
+	}
+	gt := &Message{ChatID: "oc_g", ChatType: "group", MessageID: "om_g2", ThreadID: "omt_g"}
+	if gt.Scope() != "oc_g:omt_g" {
+		t.Errorf("group topic scope = %q", gt.Scope())
+	}
+}
+
 func TestRecordGroupBinding(t *testing.T) {
 	path := t.TempDir()
 	bindings, err := state.LoadBindings(filepath.Join(path, "bindings.json"))

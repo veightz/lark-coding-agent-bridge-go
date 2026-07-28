@@ -47,9 +47,9 @@ func (b *Bridge) handleCommand(msg *Message, content string) {
 	reply := func(text string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if _, err := b.Lark.SendText(ctx, msg.ChatID, text, msg.MessageID); err != nil {
+		if _, err := b.Lark.SendText(ctx, msg.ChatID, text, msg.MessageID, msg.ReplyInThread()); err != nil {
 			// reply target may be gone; fall back to a plain send
-			_, _ = b.Lark.SendText(ctx, msg.ChatID, text, "")
+			_, _ = b.Lark.SendText(ctx, msg.ChatID, text, "", false)
 		}
 	}
 
@@ -204,6 +204,7 @@ func (b *Bridge) statusText(scope string) string {
 		sb.WriteString("- bot: " + b.Bot.AppName + " (`" + b.Bot.OpenID + "`)\n")
 	}
 	sb.WriteString("- 工作目录: `" + b.Workspaces.Get() + "`\n")
+	sb.WriteString("- scope: `" + scope + "`\n")
 	if sess, ok := b.Sessions.Get(scope); ok && (sess.SessionID != "" || sess.ThreadID != "") {
 		id := sess.SessionID
 		if id == "" {
@@ -211,7 +212,8 @@ func (b *Bridge) statusText(scope string) string {
 		}
 		sb.WriteString("- 会话: `" + id + "`\n")
 	} else {
-		sb.WriteString("- 会话: （无，下条消息新建）\n")
+		// 私聊主时间线每条消息是新话题/新会话；话题内才会续聊。
+		sb.WriteString("- 会话: （无；私聊主时间线下一条新建，话题内续聊）\n")
 	}
 	b.runsMu.Lock()
 	_, running := b.runs[scope]
@@ -387,7 +389,7 @@ func (b *Bridge) forwardToGroup(groupChatID, cardMessageID, userOpenID, text str
 		b.runsMu.Unlock()
 	}()
 
-	stream := card.NewStream(b.Lark, groupChatID, cardMessageID)
+	stream := card.NewStream(b.Lark, groupChatID, cardMessageID, false)
 	runState := card.InitialState()
 	if err := stream.Start(ctxb(), card.Render(runState, card.RenderOptions{StopButton: true, GroupChat: true})); err != nil {
 		run.Stop()

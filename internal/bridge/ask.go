@@ -22,7 +22,7 @@ func (d *larkAskDispatcher) Send(p *ask.Pending) (messageID, cardEntityID string
 	if err != nil {
 		return "", "", err
 	}
-	msgID, err := d.b.Lark.SendCardByReference(ctx, p.Route.ChatID, cardID, p.Route.ReplyTo)
+	msgID, err := d.b.Lark.SendCardByReference(ctx, p.Route.ChatID, cardID, p.Route.ReplyTo, p.Route.InThread)
 	if err != nil {
 		return "", "", err
 	}
@@ -49,7 +49,7 @@ func (d *larkAskDispatcher) OnSettle(p *ask.Pending, result ask.Result) {
 
 // handleAskUser runs the Feishu card flow for an in-process EventAskUser
 // (OpenCode question / pi extension_ui). Blocks until answered or timeout.
-func (b *Bridge) handleAskUser(scope string, chatID, replyTo string, evt agent.Event) {
+func (b *Bridge) handleAskUser(scope string, chatID, replyTo string, inThread bool, evt agent.Event) {
 	if b.Ask == nil {
 		log.Printf("[ask] broker not ready, dropping ask %s", evt.AskID)
 		if evt.Reply != nil {
@@ -82,9 +82,10 @@ func (b *Bridge) handleAskUser(scope string, chatID, replyTo string, evt agent.E
 	}
 	result, err := b.Ask.Register(ask.CreateInput{
 		Route: ask.Route{
-			ChatID:  chatID,
-			ReplyTo: replyTo,
-			Scope:   scope,
+			ChatID:   chatID,
+			ReplyTo:  replyTo,
+			InThread: inThread,
+			Scope:    scope,
 		},
 		Questions: questions,
 		Source:    source,
@@ -218,13 +219,13 @@ func anyToInt(v any) int {
 }
 
 // SetScopeRoute records chat routing for hook-originated asks.
-func (b *Bridge) SetScopeRoute(scope, chatID, replyTo string) {
+func (b *Bridge) SetScopeRoute(scope, chatID, replyTo string, inThread bool) {
 	b.routesMu.Lock()
 	defer b.routesMu.Unlock()
 	if b.scopeRoutes == nil {
 		b.scopeRoutes = map[string]ask.Route{}
 	}
-	b.scopeRoutes[scope] = ask.Route{ChatID: chatID, ReplyTo: replyTo, Scope: scope}
+	b.scopeRoutes[scope] = ask.Route{ChatID: chatID, ReplyTo: replyTo, InThread: inThread, Scope: scope}
 }
 
 // ClearScopeRoute drops routing when a run ends.

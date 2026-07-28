@@ -390,9 +390,13 @@ func (q *PendingQueue) fire()                // 收拢本批消息 → 触发 ru
 // 支持消息类型：text / post（富文本）/ image / file
 // · post → 拍平为纯文本 + 图片引用
 // · mention 剥离：剔除 @bot 的 mention 占位，还原干净的用户输入
-// · scope 计算：单聊/群聊主会话 → "chat:&lt;chatId&gt;"；
-//               话题回复         → "chat:&lt;chatId&gt;:thread:&lt;threadId&gt;"
-// scope 是会话、工作区、队列、run 的统一隔离键</code></pre>
+// · scope 计算（ADR-0010）：
+//     群聊主会话 → chatId；群话题内 → chatId:threadId
+//     私聊     → chatId:topicRoot（RootID 或本条 MessageID）
+//       主时间线每条消息新 scope → agent 新会话；同话题后续消息续聊
+// scope 是会话、队列、run、reaction 的统一隔离键
+// ReplyInThread(chatType)：p2p=true → reply_in_thread 开话题
+// TopicRootID()：RootID → ThreadID → MessageID</code></pre>
 
 <h3>4.4 Prompt 构造 <span class="file">internal/bridge/prompt.go</span></h3>
 <pre><code>func buildPrompt(msgs []*Message, ctx PromptContext) string
@@ -525,7 +529,8 @@ func MaskEmails(s string) string // 邮箱脱敏：飞书租户审计会拒绝�
     // ...
 }
 
-func NewStream(client *lark.Client, chatID, replyTo string) *Stream
+func NewStream(client *lark.Client, chatID, replyTo string, inThread bool) *Stream
+// inThread=true → reply_in_thread（私聊以用户原消息为根开话题）
 
 func (s *Stream) Start(ctx context.Context, initial map[string]any) error
 // card.create（流式模式）→ 按 card_id 发消息到会话 → 记录 msgID → 启动 loop goroutine
@@ -602,12 +607,14 @@ func (e Entry) Alive() bool // kill(pid, 0) 活性探测
 <h3>6.4 Lark 客户端 <span class="file">internal/lark/client.go</span></h3>
 <pre><code>type Client struct { /* oapi-sdk-go v3 lark.Client + cardkit */ }
 
-func (c *Client) SendText(ctx, chatID, text, replyTo string) (msgID string, err error)
+func (c *Client) SendText(ctx, chatID, text, replyTo string, inThread bool) (msgID string, err error)
+// replyTo 非空走 message.reply；inThread=true 设 reply_in_thread（话题形式）
 func (c *Client) SendDirectText(ctx, openID, text string) (msgID, err)   // receive_id_type=open_id 私信
 func (c *Client) CreateChat(ctx, name, desc string, inviteOpenIDs []string) (chatID, err)
 // im.v1.chat.create：bot 为群主的私有群，拉指定用户（需 im:chat 权限，ADR-0006）
 func (c *Client) CreateCard(ctx, cardJSON) (cardID string, err error)     // cardkit card.create
-func (c *Client) SendCardByReference(chatID, replyTo, cardID) (msgID, err)// 按 card_id 发消息
+func (c *Client) SendCardByReference(chatID, cardID, replyTo string, inThread bool) (msgID, err)
+// 按 card_id 发消息；私聊 inThread=true 时挂在用户原消息话题下
 func (c *Client) UpdateCard(cardID string, seq int, cardJSON) error       // card.update，uuid=u_&lt;cardID&gt;_&lt;seq&gt;
 func (c *Client) FinishStreamingCard(cardID string) error                 // card.settings 关闭流式
 func (c *Client) DownloadResource(msgID, fileKey, dest string) error      // 图片/文件附件 → media/

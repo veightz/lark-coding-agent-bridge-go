@@ -198,7 +198,7 @@ func (b *Bridge) handleOpen(msg *Message, args []string, reply func(string)) {
 		welcome.WriteString("\n摘要：" + match.Preview)
 	}
 	welcome.WriteString("\n\n@我 + 任意消息即可续聊该会话。")
-	if _, err := b.Lark.SendText(ctx, groupID, welcome.String(), ""); err != nil {
+	if _, err := b.Lark.SendText(ctx, groupID, welcome.String(), "", false); err != nil {
 		log.Printf("[open] welcome message failed: %v", err)
 	}
 	b.sendGroupJumpCardEx(ctx, msg.ChatID, msg.MessageID, groupID, name, false)

@@ -39,12 +39,60 @@ type Message struct {
 	Resources    []media.Resource
 }
 
-// Scope isolates sessions: a p2p chat, a group, or one topic inside a group.
+// TopicRootID is the Feishu message id that roots this conversation topic.
+//
+// P2P 话题模型：主时间线上的每条用户消息成为话题根；话题内后续消息带
+// root_id 指向该根。群聊不走此模型（见 Scope）。
+func (m *Message) TopicRootID() string {
+	if m == nil {
+		return ""
+	}
+	if m.RootID != "" {
+		return m.RootID
+	}
+	// 已在飞书话题内但事件缺 root_id 时的兜底（少见）。
+	if m.ThreadID != "" {
+		return m.ThreadID
+	}
+	return m.MessageID
+}
+
+// Scope isolates agent sessions / debounce queues / reactions.
+//
+//   - 群聊：整群共享 chatID；已在飞书话题内时用 chatID:threadID。
+//   - 私聊（话题-per-消息）：scope = chatID:topicRoot。
+//     主时间线每条消息 → 独立 scope → agent 新会话（不续聊上一条）。
+//     同一话题内后续消息 → 相同 topicRoot → 续同一 agent 会话。
 func (m *Message) Scope() string {
+	if m == nil {
+		return ""
+	}
+	if m.ChatType == "p2p" {
+		root := m.TopicRootID()
+		if root == "" {
+			return m.ChatID
+		}
+		return m.ChatID + ":" + root
+	}
 	if m.ThreadID != "" {
 		return m.ChatID + ":" + m.ThreadID
 	}
 	return m.ChatID
+}
+
+// ReplyInThread reports whether bot replies for this chat type should use
+// Feishu topic form (reply_in_thread). Private chats open a topic under the
+// user's message so the main timeline stays clean; groups keep inline replies.
+func ReplyInThread(chatType string) bool {
+	return chatType == "p2p"
+}
+
+// ReplyInThread is true when this message arrived in a p2p chat.
+func (m *Message) ReplyInThread() bool {
+	if m == nil {
+		return false
+	}
+	return ReplyInThread(m.ChatType)
 }
 
 var mentionAllRe = regexp.MustCompile(`@_all\b`)

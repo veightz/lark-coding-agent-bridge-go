@@ -50,7 +50,7 @@ func Render(state *RunState, opts RenderOptions) map[string]any {
 		}
 	}
 
-	// Add stats line when run is finished.
+	// Add stats line when run is finished (duration / tokens / session).
 	if state.Terminal != TerminalRunning && state.Stats.DurationMs > 0 {
 		elements = append(elements, statsLine(&state.Stats))
 	}
@@ -71,6 +71,10 @@ func Render(state *RunState, opts RenderOptions) map[string]any {
 	}
 
 	if state.Terminal == TerminalRunning {
+		// Show session id as soon as known — don't wait for the run to finish.
+		if ref := state.Stats.SessionRef(); ref != "" {
+			elements = append(elements, noteMd("🆔 "+ref))
+		}
 		if state.Footer != FooterNone {
 			elements = append(elements, footerStatus(state.Footer, state))
 		}
@@ -314,6 +318,11 @@ func statsLine(stats *RunStats) map[string]any {
 		if costStr != "" {
 			parts = append(parts, "💰 "+costStr)
 		}
+	}
+	// Agent session/thread id so users can tell whether consecutive runs
+	// continued the same conversation (esp. p2p topic-per-message model).
+	if ref := stats.SessionRef(); ref != "" {
+		parts = append(parts, "🆔 "+ref)
 	}
 	return noteMd(strings.Join(parts, " · "))
 }

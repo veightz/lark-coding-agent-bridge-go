@@ -21,9 +21,10 @@ type Question struct {
 
 // Route tells the broker where to send the Feishu card.
 type Route struct {
-	ChatID  string // required
-	ReplyTo string // optional message_id to reply under (om_…)
-	Scope   string // chat scope / run id for audit
+	ChatID   string // required
+	ReplyTo  string // optional message_id to reply under (om_…)
+	InThread bool   // reply_in_thread: topic form (p2p)
+	Scope    string // chat scope / run id for audit
 }
 
 // CreateInput is everything needed to register a pending ask.

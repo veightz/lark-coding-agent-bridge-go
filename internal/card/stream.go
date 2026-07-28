@@ -14,9 +14,10 @@ import (
 // while the run is live, plus an explicit finish that closes streaming mode.
 // Ported from the original CardStreamController (throttle + update queue).
 type Stream struct {
-	client  *lark.Client
-	chatID  string
-	replyTo string
+	client   *lark.Client
+	chatID   string
+	replyTo  string
+	inThread bool // reply_in_thread: open/continue Feishu topic under replyTo
 
 	throttle time.Duration
 
@@ -33,11 +34,14 @@ type Stream struct {
 	loopWg sync.WaitGroup
 }
 
-func NewStream(client *lark.Client, chatID, replyTo string) *Stream {
+// NewStream prepares a streaming card sender.
+// inThread=true creates/continues a Feishu topic when replyTo is set (p2p).
+func NewStream(client *lark.Client, chatID, replyTo string, inThread bool) *Stream {
 	return &Stream{
 		client:   client,
 		chatID:   chatID,
 		replyTo:  replyTo,
+		inThread: inThread,
 		throttle: 400 * time.Millisecond,
 		notify:   make(chan struct{}, 1),
 		done:     make(chan struct{}),
@@ -51,7 +55,7 @@ func (s *Stream) Start(ctx context.Context, initial map[string]any) error {
 	if err != nil {
 		return err
 	}
-	msgID, err := s.client.SendCardByReference(ctx, s.chatID, cardID, s.replyTo)
+	msgID, err := s.client.SendCardByReference(ctx, s.chatID, cardID, s.replyTo, s.inThread)
 	if err != nil {
 		return err
 	}

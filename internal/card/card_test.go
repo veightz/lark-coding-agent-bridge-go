@@ -7,6 +7,66 @@ import (
 	"lark-coding-agent-bridge-go/internal/agent"
 )
 
+func TestSessionRefAndStatsLine(t *testing.T) {
+	empty := &RunStats{}
+	if empty.SessionRef() != "" {
+		t.Fatalf("empty SessionRef = %q", empty.SessionRef())
+	}
+	withSess := &RunStats{SessionID: "ses_abcdefghijklmnopqrstuvwxyz", DurationMs: 1500}
+	if got := withSess.SessionRef(); got != "ses_abcdefgh" {
+		t.Errorf("SessionRef = %q", got)
+	}
+	withThr := &RunStats{ThreadID: "thr_only_123456"}
+	if got := withThr.SessionRef(); got != "thr_only_123" && got != "thr_only_123456" {
+		// max 12 → thr_only_123 (12 chars)
+		if len(got) > 12 {
+			t.Errorf("SessionRef too long: %q", got)
+		}
+	}
+	// Prefer SessionID over ThreadID
+	both := &RunStats{SessionID: "session-aaa", ThreadID: "thread-bbb"}
+	if both.SessionRef() != "session-aaa" {
+		t.Errorf("prefer session: %q", both.SessionRef())
+	}
+
+	// Reduce should capture session from system/done events
+	s := InitialState()
+	s = s.Reduce(agent.Event{Type: agent.EventSystem, SessionID: "sess-from-system"})
+	if s.Stats.SessionID != "sess-from-system" {
+		t.Errorf("system session = %q", s.Stats.SessionID)
+	}
+	s = s.Reduce(agent.Event{Type: agent.EventDone, SessionID: "sess-from-done", TerminationReason: agent.TermNormal})
+	if s.Stats.SessionID != "sess-from-done" {
+		t.Errorf("done session = %q", s.Stats.SessionID)
+	}
+
+	line := statsLine(&RunStats{DurationMs: 2000, SessionID: "abc1234567890", InputTokens: 10, OutputTokens: 5, UsageAvailable: true})
+	content, _ := line["content"].(string)
+	if !strings.Contains(content, "🆔") || !strings.Contains(content, "abc123456789") {
+		t.Errorf("stats line missing session: %q", content)
+	}
+	if !strings.Contains(content, "⏱") {
+		t.Errorf("stats line missing duration: %q", content)
+	}
+
+	// Running card should surface session id early (before terminal stats).
+	running := InitialState()
+	running.Stats.SessionID = "early-session-id"
+	card := Render(running, RenderOptions{StopButton: true})
+	body, _ := card["body"].(map[string]any)
+	els, _ := body["elements"].([]map[string]any)
+	found := false
+	for _, el := range els {
+		if c, ok := el["content"].(string); ok && strings.Contains(c, "🆔") && strings.Contains(c, "early-sessio") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("running card should show session id early, elements=%v", els)
+	}
+}
+
 func TestReduceFlow(t *testing.T) {
 	s := InitialState()
 	if s.Terminal != TerminalRunning || s.Footer != FooterThinking {
