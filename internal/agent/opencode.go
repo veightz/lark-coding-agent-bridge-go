@@ -76,7 +76,7 @@ func (a *OpenCodeAdapter) Run(opts RunOptions) (Run, error) {
 		return nil, err
 	}
 
-	run := srv.registerRun(sessionID, opts.Cwd)
+	run := srv.registerRun(sessionID, opts.Cwd, opts.Access)
 
 	body := map[string]any{
 		"parts": []map[string]any{{"type": "text", "text": opts.Prompt}},
@@ -316,11 +316,14 @@ func (s *ocServer) postJSON(path string, body any, out any) error {
 // Note: opencode routes events per workspace — sessions created with
 // ?directory=X publish to /event?directory=X, NOT to the global /event
 // bus (verified against v1.18). One SSE loop per directory.
-func (s *ocServer) registerRun(sessionID, directory string) *ocRun {
+func (s *ocServer) registerRun(sessionID, directory string, access config.AccessLevel) *ocRun {
 	s.mu.Lock()
 	s.runSeq++
 	id := s.runSeq
-	run := &ocRun{srv: s, sessionID: sessionID, directory: directory, id: id, events: make(chan Event, 256)}
+	run := &ocRun{
+		srv: s, sessionID: sessionID, directory: directory, id: id,
+		access: access, events: make(chan Event, 256),
+	}
 	if s.runs[sessionID] == nil {
 		s.runs[sessionID] = map[uint64]*ocRun{}
 	}
@@ -359,6 +362,13 @@ func (s *ocServer) dispatch(env ocEventEnvelope) {
 	if len(events) == 0 && !terminal {
 		return
 	}
+	// full access (bridge default): auto-reply permission.asked with
+	// "always" so OpenCode never blocks on tool gates. workspace /
+	// read-only keep the Feishu permission card (ADR-0011).
+	events = s.autoAllowPermissions(sessionID, events)
+	if len(events) == 0 && !terminal {
+		return
+	}
 	// Record delivered main text so the poller can backfill anything the
 	// SSE stream lost mid-turn.
 	if env.Type == "message.part.delta" {
@@ -380,12 +390,13 @@ func (s *ocServer) dispatch(env ocEventEnvelope) {
 	s.mu.Lock()
 	runs := s.runs[sessionID]
 	// Bind AskUser reply closures to each run's working directory so
-	// POST /question/{id}/reply hits the correct OpenCode worktree instance.
+	// POST /question|permission/{id}/reply hits the correct OpenCode worktree.
 	for i := range events {
 		if events[i].Type != EventAskUser || events[i].AskID == "" {
 			continue
 		}
 		qid := events[i].AskID
+		isPerm := events[i].Source == "opencode-permission" || strings.HasPrefix(qid, "per")
 		events[i].Reply = func(answers [][]string, cancelled bool) error {
 			// Prefer the directory of any live run for this session.
 			s.mu.Lock()
@@ -397,6 +408,14 @@ func (s *ocServer) dispatch(env ocEventEnvelope) {
 				}
 			}
 			s.mu.Unlock()
+			if isPerm {
+				reply := ocPermissionReply(answers, cancelled)
+				path := "/permission/" + qid + "/reply"
+				if dir != "" {
+					path += "?directory=" + urlQueryEscape(dir)
+				}
+				return s.postJSON(path, map[string]any{"reply": reply}, nil)
+			}
 			// On cancel/timeout still reply with empty labels so OpenCode unblocks.
 			if cancelled && len(answers) == 0 {
 				answers = [][]string{{""}}
@@ -491,6 +510,20 @@ func (s *ocServer) translate(env ocEventEnvelope) (events []Event, terminal bool
 			AskID:     qid,
 			Questions: questions,
 			Source:    "opencode",
+		}}, false
+
+	case "permission.asked", "permission.v2.asked":
+		// Tool-level permission gate (bash/edit/…). Feishu card with
+		// once/always/reject → POST /permission/{id}/reply (ADR-0011).
+		pid, questions := parseOCPermission(props)
+		if pid == "" || len(questions) == 0 {
+			return nil, false
+		}
+		return []Event{{
+			Type:      EventAskUser,
+			AskID:     pid,
+			Questions: questions,
+			Source:    "opencode-permission",
 		}}, false
 
 	case "session.idle":
@@ -901,12 +934,185 @@ func parseOCQuestions(props map[string]any) (id string, questions []AskQuestion)
 	return id, questions
 }
 
+// ocPermissionOptions are fixed reply keys for POST /permission/{id}/reply.
+var ocPermissionOptions = []AskOption{
+	{Key: "once", Label: "允许一次"},
+	{Key: "always", Label: "始终允许"},
+	{Key: "reject", Label: "拒绝"},
+}
+
+// ocAutoAllowPermission is true when bridge access should YOLO tool gates
+// (matches Claude bypassPermissions / codex danger-full-access). Empty
+// access is treated as full — that is the profile default.
+func ocAutoAllowPermission(access config.AccessLevel) bool {
+	switch access {
+	case config.AccessWorkspace, config.AccessReadOnly:
+		return false
+	default:
+		return true
+	}
+}
+
+// autoAllowPermissions silently replies "always" for permission asks when
+// the session's live run is on full access. Remaining events are returned.
+func (s *ocServer) autoAllowPermissions(sessionID string, events []Event) []Event {
+	if len(events) == 0 {
+		return events
+	}
+	s.mu.Lock()
+	dir := ""
+	auto := false
+	for _, run := range s.runs[sessionID] {
+		if run == nil {
+			continue
+		}
+		if run.directory != "" {
+			dir = run.directory
+		}
+		if ocAutoAllowPermission(run.access) {
+			auto = true
+		}
+	}
+	s.mu.Unlock()
+	if !auto {
+		return events
+	}
+
+	kept := make([]Event, 0, len(events))
+	for _, evt := range events {
+		if evt.Type != EventAskUser || evt.Source != "opencode-permission" || evt.AskID == "" {
+			kept = append(kept, evt)
+			continue
+		}
+		path := "/permission/" + evt.AskID + "/reply"
+		if dir != "" {
+			path += "?directory=" + urlQueryEscape(dir)
+		}
+		if err := s.postJSON(path, map[string]any{"reply": "always"}, nil); err != nil {
+			log.Printf("[opencode] auto-allow permission %s 失败: %v（降级弹卡）", evt.AskID, err)
+			kept = append(kept, evt) // fall back to Feishu card
+			continue
+		}
+		log.Printf("[opencode] auto-allow permission %s (access=full → always)", evt.AskID)
+	}
+	return kept
+}
+
+// parseOCPermission normalizes permission.asked / permission.v2.asked into
+// a single-select EventAskUser (keys: once | always | reject).
+func parseOCPermission(props map[string]any) (id string, questions []AskQuestion) {
+	id, _ = props["id"].(string)
+	if id == "" {
+		id, _ = props["requestID"].(string)
+	}
+	if id == "" {
+		return "", nil
+	}
+
+	// v1: permission + patterns; v2: action + resources
+	kind := stringField(props, "permission")
+	if kind == "" {
+		kind = stringField(props, "action")
+	}
+	targets := anyStringSlice(props["patterns"])
+	if len(targets) == 0 {
+		targets = anyStringSlice(props["resources"])
+	}
+	always := anyStringSlice(props["always"])
+	if len(always) == 0 {
+		always = anyStringSlice(props["save"])
+	}
+
+	var b strings.Builder
+	b.WriteString("🔐 工具权限请求")
+	if kind != "" {
+		b.WriteString("\n**类型**: `")
+		b.WriteString(kind)
+		b.WriteString("`")
+	}
+	if len(targets) > 0 {
+		b.WriteString("\n**目标**:")
+		for _, t := range targets {
+			b.WriteString("\n- `")
+			b.WriteString(truncateRunes(t, 200))
+			b.WriteString("`")
+		}
+	}
+	if meta, ok := props["metadata"].(map[string]any); ok && len(meta) > 0 {
+		for _, k := range []string{"command", "filepath", "path", "description", "title", "cwd"} {
+			if v := stringField(meta, k); v != "" {
+				b.WriteString("\n**")
+				b.WriteString(k)
+				b.WriteString("**: `")
+				b.WriteString(truncateRunes(v, 300))
+				b.WriteString("`")
+			}
+		}
+	}
+	if len(always) > 0 {
+		b.WriteString("\n\n选择「始终允许」将记住：")
+		for _, t := range always {
+			b.WriteString("\n- `")
+			b.WriteString(truncateRunes(t, 120))
+			b.WriteString("`")
+		}
+	}
+
+	questions = []AskQuestion{{
+		Prompt:  b.String(),
+		Options: append([]AskOption(nil), ocPermissionOptions...),
+	}}
+	return id, questions
+}
+
+// ocPermissionReply maps card answers (keys or Chinese labels) to the
+// OpenCode permission reply enum. Timeout/cancel → reject.
+func ocPermissionReply(answers [][]string, cancelled bool) string {
+	if cancelled {
+		return "reject"
+	}
+	if len(answers) == 0 || len(answers[0]) == 0 {
+		return "reject"
+	}
+	v := strings.TrimSpace(answers[0][0])
+	switch strings.ToLower(v) {
+	case "once", "allow_once", "allow once", "允许一次":
+		return "once"
+	case "always", "allow_always", "allow always", "始终允许":
+		return "always"
+	case "reject", "deny", "block", "拒绝":
+		return "reject"
+	default:
+		// Unknown freeform: still unblock the agent safely.
+		return "reject"
+	}
+}
+
+func anyStringSlice(v any) []string {
+	arr, ok := v.([]any)
+	if !ok {
+		if ss, ok := v.([]string); ok {
+			return ss
+		}
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, item := range arr {
+		s, ok := item.(string)
+		if ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // ─── ocRun ─────────────────────────────────────────────────────────
 
 type ocRun struct {
 	srv       *ocServer
 	sessionID string
 	directory string
+	access    config.AccessLevel
 	id        uint64
 	events    chan Event
 	stopped   sync.Once

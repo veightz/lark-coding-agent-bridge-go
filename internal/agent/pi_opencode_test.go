@@ -2,7 +2,11 @@ package agent
 
 import (
 	"encoding/json"
+	"net/http"
+	"strings"
 	"testing"
+
+	"lark-coding-agent-bridge-go/internal/config"
 )
 
 func TestTranslatePiExtensionUISelect(t *testing.T) {
@@ -77,6 +81,130 @@ func TestTranslateOpenCodeQuestionAsked(t *testing.T) {
 	if events[0].AskID != "que_1" || len(events[0].Questions) != 1 {
 		t.Fatalf("ask=%+v", events[0])
 	}
+}
+
+func TestTranslateOpenCodePermissionAsked(t *testing.T) {
+	s := &ocServer{}
+	events, terminal := s.translate(ocEventEnvelope{
+		Type: "permission.asked",
+		Properties: map[string]any{
+			"id":         "per_1",
+			"sessionID":  "ses_1",
+			"permission": "bash",
+			"patterns":   []any{"rm -rf /tmp/foo"},
+			"metadata":   map[string]any{"command": "rm -rf /tmp/foo"},
+			"always":     []any{"rm -rf /tmp/foo"},
+		},
+	})
+	if terminal || len(events) != 1 || events[0].Type != EventAskUser {
+		t.Fatalf("events=%v terminal=%v", events, terminal)
+	}
+	evt := events[0]
+	if evt.AskID != "per_1" || evt.Source != "opencode-permission" {
+		t.Fatalf("ask=%+v", evt)
+	}
+	if len(evt.Questions) != 1 || len(evt.Questions[0].Options) != 3 {
+		t.Fatalf("questions=%+v", evt.Questions)
+	}
+	keys := map[string]bool{}
+	for _, o := range evt.Questions[0].Options {
+		keys[o.Key] = true
+	}
+	for _, want := range []string{"once", "always", "reject"} {
+		if !keys[want] {
+			t.Errorf("missing option %q", want)
+		}
+	}
+	if !containsSubstr(evt.Questions[0].Prompt, "bash") {
+		t.Errorf("prompt should mention permission type: %q", evt.Questions[0].Prompt)
+	}
+}
+
+func TestTranslateOpenCodePermissionV2Asked(t *testing.T) {
+	s := &ocServer{}
+	events, terminal := s.translate(ocEventEnvelope{
+		Type: "permission.v2.asked",
+		Properties: map[string]any{
+			"id":        "per_v2",
+			"sessionID": "ses_1",
+			"action":    "edit",
+			"resources": []any{"src/main.go"},
+			"save":      []any{"src/*"},
+		},
+	})
+	if terminal || len(events) != 1 {
+		t.Fatalf("events=%v terminal=%v", events, terminal)
+	}
+	if events[0].AskID != "per_v2" || events[0].Source != "opencode-permission" {
+		t.Fatalf("ask=%+v", events[0])
+	}
+	if !containsSubstr(events[0].Questions[0].Prompt, "edit") {
+		t.Errorf("prompt=%q", events[0].Questions[0].Prompt)
+	}
+}
+
+func TestOCAutoAllowPermission(t *testing.T) {
+	if !ocAutoAllowPermission("") || !ocAutoAllowPermission(config.AccessFull) {
+		t.Fatal("empty/full should auto-allow")
+	}
+	if ocAutoAllowPermission(config.AccessWorkspace) || ocAutoAllowPermission(config.AccessReadOnly) {
+		t.Fatal("workspace/read-only should require Feishu card")
+	}
+}
+
+func TestAutoAllowPermissionsFiltersEvents(t *testing.T) {
+	// postJSON hits a dead server; on failure events are kept (card fallback).
+	// Here we only assert filtering when auto is false (workspace).
+	s := &ocServer{
+		runs: map[string]map[uint64]*ocRun{
+			"ses_1": {1: &ocRun{sessionID: "ses_1", directory: "/tmp", access: config.AccessWorkspace}},
+		},
+		client: &http.Client{},
+		base:   "http://127.0.0.1:1", // unreachable; not used when auto=false
+	}
+	events := []Event{{
+		Type: EventAskUser, AskID: "per_1", Source: "opencode-permission",
+		Questions: []AskQuestion{{Prompt: "x", Options: ocPermissionOptions}},
+	}}
+	got := s.autoAllowPermissions("ses_1", events)
+	if len(got) != 1 {
+		t.Fatalf("workspace should keep permission event: %+v", got)
+	}
+
+	// full access with unreachable server → fallback keeps event
+	s.runs["ses_1"][1].access = config.AccessFull
+	got = s.autoAllowPermissions("ses_1", events)
+	if len(got) != 1 {
+		t.Fatalf("auto-allow failure should fall back to card: %+v", got)
+	}
+}
+
+func TestOCPermissionReply(t *testing.T) {
+	cases := []struct {
+		answers   [][]string
+		cancelled bool
+		want      string
+	}{
+		{[][]string{{"once"}}, false, "once"},
+		{[][]string{{"always"}}, false, "always"},
+		{[][]string{{"reject"}}, false, "reject"},
+		{[][]string{{"允许一次"}}, false, "once"},
+		{[][]string{{"始终允许"}}, false, "always"},
+		{[][]string{{"拒绝"}}, false, "reject"},
+		{nil, true, "reject"},
+		{[][]string{{}}, false, "reject"},
+		{[][]string{{"weird"}}, false, "reject"},
+	}
+	for _, tc := range cases {
+		got := ocPermissionReply(tc.answers, tc.cancelled)
+		if got != tc.want {
+			t.Errorf("answers=%v cancelled=%v got=%q want=%q", tc.answers, tc.cancelled, got, tc.want)
+		}
+	}
+}
+
+func containsSubstr(s, sub string) bool {
+	return strings.Contains(s, sub)
 }
 
 func TestTranslatePiEvent(t *testing.T) {

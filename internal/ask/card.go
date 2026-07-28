@@ -8,18 +8,34 @@ import (
 
 // BuildCard renders a CardKit 2.0 JSON document for an ask (or its settled state).
 func BuildCard(p *Pending, result *Result) map[string]any {
+	isPerm := strings.Contains(p.Source, "permission")
 	title := "❓ 需要你的选择"
+	if isPerm {
+		title = "🔐 需要权限确认"
+	}
 	headerTpl := "blue"
+	if isPerm {
+		headerTpl = "orange"
+	}
 	if result != nil {
 		switch result.Kind {
 		case KindAnswered:
 			title = "✅ 已选择"
+			if isPerm {
+				title = "✅ 权限已处理"
+			}
 			headerTpl = "green"
 		case KindTimedOut:
 			title = "⏰ 提问已超时"
+			if isPerm {
+				title = "⏰ 权限请求已超时"
+			}
 			headerTpl = "orange"
 		case KindInvalidated:
 			title = "失效的提问"
+			if isPerm {
+				title = "失效的权限请求"
+			}
 			headerTpl = "grey"
 		}
 	}

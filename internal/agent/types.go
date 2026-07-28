@@ -77,10 +77,12 @@ type Event struct {
 	Questions []AskQuestion
 	// Freeform allows the user to answer by typing in chat (pi input/editor).
 	Freeform bool
-	// Source tags the origin for card chrome ("opencode" | "pi" | …).
+	// Source tags the origin for card chrome
+	// ("opencode" | "opencode-permission" | "pi" | …).
 	Source string
 	// Reply posts the chosen answers back into the agent (in-process only).
 	// Nil for hook-originated asks handled outside the event stream.
+	// For OpenCode permission cards, answers[0][0] is once|always|reject.
 	Reply AskReplyFunc
 
 	// usage

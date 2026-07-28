@@ -1,8 +1,8 @@
 # ADR-0009: 收紧私聊自动建群判定（去掉纯长度兜底）
 
-- 状态: accepted
+- 状态: superseded by ADR-0012（自动建群与 LooksLikeTask 判定整体取消）
 - 日期: 2026-07-28
-- Supersedes: ADR-0006 中「≥20 字长消息兜底算任务」这一条；其余升级流程不变
+- Supersedes: ADR-0006 中「≥20 字长消息兜底算任务」这一条；其余升级流程不变（该路径后由 ADR-0012 取消）
 
 ## 背景（Context）
 

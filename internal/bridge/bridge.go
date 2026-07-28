@@ -73,9 +73,6 @@ type Bridge struct {
 	reactionsMu sync.Mutex
 	reactions   map[string]workingReaction // scope → working reaction
 
-	escalationsMu sync.Mutex
-	escalations   map[string]*escalation // p2p chatID → 进行中的建群升级（ADR-0006）
-
 	// Ask broker + per-scope chat routes for Claude hooks / OpenCode questions (ADR-0008).
 	Ask         *ask.Broker
 	AskURL      string // loopback base URL for hooks (empty if not started)
@@ -191,10 +188,8 @@ func (b *Bridge) HandleMessage(event *larkimEvent) {
 		return
 	}
 
-	// 私聊里的明确任务：自动建群并把任务转过去（ADR-0006）。
-	if msg.ChatType == "p2p" && b.escalateP2P(msg) {
-		return
-	}
+	// 私聊统一话题回复（reply_in_thread），不再按任务意图自动建群（ADR-0012）。
+	// 需要群聊时用 /new chat 或 /open 显式操作。
 
 	log.Printf("[intake] chat=%s type=%s scope=%s root=%s thread=%s chars=%d resources=%d",
 		msg.ChatID, msg.ChatType, msg.Scope(), msg.TopicRootID(), msg.ThreadID, len(content), len(msg.Resources))

@@ -289,7 +289,7 @@ func (s *ocServer) sessionFor(ctx, scope, cwd string) (sessionID string, err err
 // 命中缓存/bridge 持久化的 sessionID 直接复用；
 // 否则 POST /session?directory=&lt;cwd&gt; 新建（directory 路由工作目录）
 
-func (s *ocServer) registerRun(sessionID, directory string) *ocRun  // 建立扇出通道，并确保该目录的 SSE 流已启动
+func (s *ocServer) registerRun(sessionID, directory string, access AccessLevel) *ocRun  // 建立扇出通道；access 决定 permission 是否 auto-allow
 func (s *ocServer) closeRun(sessionID string, run *ocRun)             // 终态后关闭
 
 func (s *ocServer) eventLoop(directory string)
@@ -340,8 +340,7 @@ func (b *Bridge) HandleMessage(ctx context.Context, msg *Message)
 // 2. 快捷回复路由：点击 💬 按钮后用户的下一条私聊 → forwardToGroup 转回原群
 // 3. 群聊门槛：必须 @bot 才受理（单聊直通）
 // 4. 斜杠命令分流：/new /cd /ws /sessions /bind /open /stop /status /help → commands.go
-// 5. 私聊任务升级：LooksLikeTask 命中 → escalateP2P 自动建群（group.go，ADR-0006）
-// 6. 普通消息 → NormalizeMessage → 投入该 scope 的 PendingQueue
+// 5. 普通消息 → 投入该 scope 的 PendingQueue（私聊统一话题回复，不自动建群，ADR-0012）
 
 func (b *Bridge) runBatch(ctx, scope string, msgs []*Message)
 // 防抖窗口收拢的一批消息 → 下载附件（media/）→ buildPrompt →
@@ -370,6 +369,9 @@ func (b *Bridge) stopRunByCardMessage(msgID)     // 卡片 ⏹ 按钮 callback�
 
 // Claude：run 注入 LARK_BRIDGE_* + --settings；子命令 `hook claude` 读 stdin → POST /v1/ask → stdout directive
 // OpenCode：SSE question.asked → EventAskUser → bridge.handleAskUser → POST /question/{id}/reply
+// OpenCode：SSE permission.asked|permission.v2.asked（ADR-0011）
+//   access=full（默认）→ auto POST /permission/{id}/reply {reply:always}
+//   workspace|read-only → EventAskUser 卡片 once|always|reject
 // Pi：RPC extension_ui_request (select/confirm/input/editor) → EventAskUser → extension_ui_response
 //     input/editor 支持聊天文字 freeform（SubmitComment / tryAnswerAskWithText）
 // Codex：无结构化反问 hook（passthrough）</code></pre>
@@ -409,7 +411,7 @@ func (q *PendingQueue) fire()                // 收拢本批消息 → 触发 ru
 <table>
   <tr><th>命令</th><th>行为</th></tr>
   <tr><td><code>/new</code></td><td>重置当前 scope 会话（常驻型走 <code>SessionResetter</code>，spawn 型清 SessionID）</td></tr>
-  <tr><td><code>/new chat [名称]</code></td><td>显式建群并拉用户入群，私聊收跳转卡片（ADR-0006）</td></tr>
+  <tr><td><code>/new chat [名称]</code></td><td>显式建群并拉用户入群，私聊收跳转卡片（ADR-0012）</td></tr>
   <tr><td><code>/cd &lt;path&gt;</code></td><td>切换当前 scope 工作目录（写 workspaces.json）</td></tr>
   <tr><td><code>/ws list/save/use/remove</code></td><td>命名工作区管理</td></tr>
   <tr><td><code>/sessions</code></td><td>列出磁盘上已有的 agent CLI 会话；标注已绑定群（ADR-0005/0007）</td></tr>
@@ -421,30 +423,16 @@ func (q *PendingQueue) fire()                // 收拢本批消息 → 触发 ru
   <tr><td><code>/help</code></td><td>帮助文本</td></tr>
 </table>
 
-<h3>4.6 私聊任务自动建群 <span class="file">internal/bridge/group.go · classify.go</span></h3>
-<pre><code>func LooksLikeTask(content string, hasResources bool) bool      // classify.go
-// 纯启发式任务判定（ADR-0006）：带附件即任务；闲聊短句（完全匹配）排除；
-// 动作关键词（帮我/修复/实现/分析/fix/implement…）命中即任务；≥20 字长消息兜底
-
-type escalation struct { done chan struct{}; groupID string; err error; at time.Time }
-
-func (b *Bridge) escalateP2P(msg *Message) bool
-// HandleMessage 第 5 步。返回 true = 消息已接管：
-// · 15s 窗口（escalationWindow）内已有升级记录 → 等待 esc.done，并入同一群
-// · /bind 绑定过的私聊（Bindings.HasScope）→ 返回 false，尊重绑定不升级
-// · LooksLikeTask 命中 → 登记 escalation，go runEscalation
-
-func (b *Bridge) runEscalation(msg *Message, esc *escalation)
-// Lark.CreateChat（bot 群主 + 拉用户，需 im:chat 权限）→
-// 群欢迎消息（cwd + 任务上下文）→ sendGroupJumpCard（私聊跳转卡片）→
-// pushToGroup：消息改写 ChatID 后入群 scope 的去抖队列，runBatch 自动启动。
-// 建群失败：私聊提示原因 + 消息回退私聊队列直接处理，不丢消息。
+<h3>4.6 显式建群与跳转卡片 <span class="file">internal/bridge/group.go</span></h3>
+<pre><code>// ADR-0012：私聊不再 LooksLikeTask / escalateP2P 自动建群。
+// 私聊消息一律进 PendingQueue，reply_in_thread 话题内回复。
 
 func (b *Bridge) sendGroupJumpCardEx(ctx, p2pChatID, replyTo, groupID, groupName, reused bool)
 // CardKit 卡片，按钮 behaviors=open_url →
 // https://applink.feishu.cn/client/chat/open?openChatId=&lt;groupID&gt; 一键进群；
-// reused=true 时文案为「群已存在」
+// reused=true 时文案为「群已存在」；私聊卡挂在用户消息话题下
 
+func groupNameFor(content string) string   // 任务 · {标题}，供 /open 新建群命名
 func (b *Bridge) handleNewChat(msg, name, reply)   // /new chat [名称]：显式建群
 
 // 快捷回复（commands.go）：

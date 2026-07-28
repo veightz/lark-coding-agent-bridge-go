@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"lark-coding-agent-bridge-go/internal/agent"
@@ -117,7 +118,14 @@ func (b *Bridge) handleAskUser(scope string, chatID, replyTo string, inThread bo
 		}
 		return
 	}
-	answers := ask.FormatAnswersWithComment(questions, result)
+	// Permission cards use stable API keys (once/always/reject); question tools
+	// want display labels (OpenCode question reply contract).
+	var answers [][]string
+	if strings.Contains(source, "permission") {
+		answers = result.Answers
+	} else {
+		answers = ask.FormatAnswersWithComment(questions, result)
+	}
 	if evt.Reply != nil {
 		if err := evt.Reply(answers, false); err != nil {
 			log.Printf("[ask] reply to agent failed: %v", err)

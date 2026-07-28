@@ -11,6 +11,7 @@
 | 模型反问 → 飞书卡片 | `ask-broker` / `ask-card` / hook-installer | `internal/ask` + ADR-0008 |
 | Claude `AskUserQuestion` | PreToolUse hook + IPC | `hook claude` + profile `claude-settings.json` |
 | OpenCode `question` | 插件转 hook | 适配器直接消费 SSE `question.asked` |
+| OpenCode 工具权限 | （视实现） | SSE `permission.asked` → 飞书卡 → `POST /permission/{id}/reply`（ADR-0011） |
 | Pi Extension UI | （botmux 走 TUI，本仓库用 RPC） | `extension_ui_request` → 卡片 → `extension_ui_response` |
 | 降级 | daemon 不可达 passthrough | 同语义（空 stdout / 不 reply / cancelled） |
 
@@ -31,6 +32,7 @@
 - **多工作区**：`/cd` 切换目录，`/ws` 保存 / 复用命名工作区。
 - **图片和文件**：直接发给 bot，自动下载本地并附上路径（pi 走 base64 内嵌，opencode 走 file part）。
 - **模型反问卡片**（ADR-0008）：Claude `AskUserQuestion` / OpenCode `question` / Pi `extension_ui_request` 在飞书弹出交互卡片，点选（或文字 freeform）后 agent 继续（对标 botmux ask 链路）。
+- **OpenCode 权限**（ADR-0011）：默认 `full` 自动 `always` 放行；`workspace`/`read-only` 时 `permission.asked` 弹「允许一次 / 始终允许 / 拒绝」卡。
 - **扫码向导**：首次运行终端渲染二维码创建 / 绑定 PersonalAgent 应用（复刻 registerApp 协议），也支持 `--app-id`。
 - **多 profile**：独立凭证、会话、工作区与媒体缓存（`--profile` 必填）。
 - **dashboard**：查看本机所有运行中的 bridge 实例及版本（区分发布版 / 开发分支构建）。

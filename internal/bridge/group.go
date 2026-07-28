@@ -9,129 +9,8 @@ import (
 	"unicode/utf8"
 )
 
-// p2p 私聊任务自动建群流程（ADR-0006）：
-//
-//	用户私聊发出明确任务
-//	  → 创建专属群（bot + 用户）
-//	  → 私聊里发跳转卡片（一键进群）
-//	  → 群里发欢迎消息 + 任务上下文
-//	  → 任务消息转入群 scope 的队列，自动启动运行
-//
-// 建群失败（如缺 im:chat 权限）时降级为私聊里直接处理，不丢消息。
-
-// escalationWindow 是「跟发消息并入同一群」的时间窗：建群后的窗口期
-// 内，同一私聊的后续消息视为同一任务的一部分，进入同一个群。
-const escalationWindow = 15 * time.Second
-
-// escalation 记录一次私聊 → 群的升级。
-type escalation struct {
-	done    chan struct{} // 建群完成后关闭
-	groupID string
-	err     error
-	at      time.Time
-}
-
-// escalateP2P 处理私聊消息的建群升级。返回 true 表示消息已被接管
-// （转入群 scope 或排队等待建群结果），调用方不要再走私聊流程。
-func (b *Bridge) escalateP2P(msg *Message) bool {
-	// 窗口期内的跟发消息：并入刚刚创建的群。
-	if esc := b.recentEscalation(msg.ChatID); esc != nil {
-		select {
-		case <-esc.done:
-		case <-time.After(10 * time.Second):
-		}
-		if esc.err == nil && esc.groupID != "" {
-			b.pushToGroup(esc.groupID, msg)
-		} else {
-			// 建群失败，回退到私聊直接处理。
-			b.pending.Push(msg.Scope(), msg)
-		}
-		return true
-	}
-
-	// 私聊被显式绑定到某个 CLI 会话时，尊重绑定，不升级建群。
-	if b.Bindings.HasScope(msg.ChatID) {
-		return false
-	}
-	if !LooksLikeTask(msg.Content, len(msg.Resources) > 0) {
-		return false
-	}
-
-	esc := &escalation{done: make(chan struct{}), at: time.Now()}
-	b.escalationsMu.Lock()
-	if b.escalations == nil {
-		b.escalations = map[string]*escalation{}
-	}
-	b.escalations[msg.ChatID] = esc
-	b.escalationsMu.Unlock()
-
-	go b.runEscalation(msg, esc)
-	return true
-}
-
-// recentEscalation 返回时间窗内该私聊的升级记录，顺带清理过期记录。
-func (b *Bridge) recentEscalation(p2pChatID string) *escalation {
-	b.escalationsMu.Lock()
-	defer b.escalationsMu.Unlock()
-	esc, ok := b.escalations[p2pChatID]
-	if !ok {
-		return nil
-	}
-	if time.Since(esc.at) > escalationWindow {
-		delete(b.escalations, p2pChatID)
-		return nil
-	}
-	return esc
-}
-
-func (b *Bridge) runEscalation(msg *Message, esc *escalation) {
-	defer close(esc.done)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	name := groupNameFor(msg.Content)
-	groupID, err := b.Lark.CreateChat(ctx, name, "由私聊任务自动创建", []string{msg.SenderID})
-	if err != nil {
-		esc.err = err
-		log.Printf("[escalate] create chat failed: %v", err)
-		_, _ = b.Lark.SendText(ctx, msg.ChatID,
-			"⚠️ 自动建群失败（确认 bot 已开启 im:chat 权限），改为在私聊里处理。\n原因："+err.Error(),
-			msg.MessageID, true)
-		b.pending.Push(msg.Scope(), msg)
-		return
-	}
-	esc.groupID = groupID
-	log.Printf("[escalate] p2p %s → group %s (%s)", msg.ChatID, groupID, name)
-
-	// 群里的第一条消息：欢迎 + 任务上下文。
-	var welcome strings.Builder
-	welcome.WriteString("🎉 群已建好")
-	if cwd := b.Workspaces.Get(); cwd != "" {
-		welcome.WriteString("，工作目录：`" + cwd + "`")
-	}
-	if task := strings.TrimSpace(msg.Content); task != "" {
-		welcome.WriteString("\n\n📌 任务：" + task)
-	}
-	if _, err := b.Lark.SendText(ctx, groupID, welcome.String(), "", false); err != nil {
-		log.Printf("[escalate] welcome message failed: %v", err)
-	}
-
-	// 私聊里的跳转卡片。
-	b.sendGroupJumpCardEx(ctx, msg.ChatID, msg.MessageID, groupID, name, false)
-
-	// 任务转入群 scope，自动启动运行。
-	b.pushToGroup(groupID, msg)
-}
-
-// pushToGroup 把一条私聊消息改写为群消息，送入群 scope 的去抖队列。
-// MessageID/Resources 保留原值，附件仍可从原私聊消息下载。
-func (b *Bridge) pushToGroup(groupID string, msg *Message) {
-	synthetic := *msg
-	synthetic.ChatID = groupID
-	synthetic.ChatType = "group"
-	synthetic.ThreadID = ""
-	b.pending.Push(synthetic.Scope(), &synthetic)
-}
+// 群聊相关：显式建群（/new chat）与 /open 跳转卡片。
+// 私聊任务自动建群已由 ADR-0012 取消——私聊统一话题回复，不再启发式升级。
 
 // sendGroupJumpCard 在私聊里发一张卡片，带一键跳转群会话的按钮（新建群）。
 func (b *Bridge) sendGroupJumpCard(ctx context.Context, p2pChatID, replyTo, groupID, groupName string) {
@@ -191,6 +70,21 @@ var leadInPrefixes = []string{
 	"帮我", "麻烦你", "麻烦", "请帮我", "请帮", "请你", "帮忙",
 	"能不能", "可以帮我", "劳驾", "拜托",
 	"hey ", "hi ", "hello ", "please ",
+}
+
+// titleKeywords 用于从长句里切出「动作词起」的标题段（仅 /new chat、/open 命名，不触发建群）。
+var titleKeywords = []string{
+	"帮我", "麻烦", "请帮", "帮忙",
+	"实现", "修复", "写一个", "写个", "写一篇", "写一下",
+	"创建", "新建", "部署", "分析", "总结", "翻译",
+	"解释", "排查", "调试", "优化", "重构", "审查",
+	"查一下", "查看", "看一下", "看看", "检查",
+	"改成", "修改", "加上", "新增", "删除", "去掉",
+	"跑一下", "运行", "执行", "整理", "对比", "比较", "设计",
+	"fix", "bug", "implement", "create", "write", "refactor",
+	"debug", "deploy", "review", "summarize", "translate",
+	"analyze", "analyse", "optimize", "add", "remove",
+	"update", "explain", "build",
 }
 
 // groupNameFor 从用户消息提炼短群名：任务 · {标题}。
@@ -290,10 +184,10 @@ func firstSegment(s string) string {
 	return s
 }
 
-// earliestKeywordIndex 返回 taskKeywords 在 lower 中最早出现的 byte 下标，未命中 -1。
+// earliestKeywordIndex 返回 titleKeywords 在 lower 中最早出现的 byte 下标，未命中 -1。
 func earliestKeywordIndex(lower string) int {
 	best := -1
-	for _, kw := range taskKeywords {
+	for _, kw := range titleKeywords {
 		k := strings.ToLower(kw)
 		if i := strings.Index(lower, k); i >= 0 {
 			if best < 0 || i < best {

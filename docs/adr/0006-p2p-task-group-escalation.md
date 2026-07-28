@@ -1,8 +1,8 @@
 # ADR-0006: 私聊任务自动建群（p2p → group 升级）
 
-- 状态: accepted
+- 状态: superseded by [ADR-0012](0012-disable-p2p-auto-group-escalation.md)（自动升级已取消；`/new chat` 显式建群仍保留）
 - 日期: 2026-07-26
-- > 长度兜底规则已被 [ADR-0009](0009-stricter-p2p-task-classification.md) 取代（仅附件/动作关键词算任务）
+- > 长度兜底规则曾被 [ADR-0009](0009-stricter-p2p-task-classification.md) 取代；整条自动建群路径后由 ADR-0012 取消
 
 ## 背景（Context）
 

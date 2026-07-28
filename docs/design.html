@@ -72,7 +72,7 @@
     <li><a href="#s7">Dashboard 与进程注册表</a></li>
     <li><a href="#s8">自升级（upgrade）</a></li>
     <li><a href="#s9">数据目录布局</a></li>
-    <li><a href="#s10">私聊任务自动建群</a></li>
+    <li><a href="#s10">私聊建群策略（显式）</a></li>
     <li><a href="#s11">群↔会话关联与 /open 复用</a></li>
   </ol>
 </nav>
@@ -86,6 +86,7 @@
   <li><b>四种 agent 适配器</b>：spawn-per-message（claude、codex）与常驻进程（pi RPC、opencode HTTP+SSE）两类形态，统一为同一事件流抽象。</li>
   <li><b>流式卡片</b>：CardKit 2.0，400ms 节流全卡更新，飞书客户端呈现打字机效果。</li>
   <li><b>模型反问卡片</b>（ADR-0008，对标 <a href="https://github.com/deepcoldy/botmux">botmux</a>）：Claude <code>AskUserQuestion</code> / OpenCode <code>question</code> / Pi <code>extension_ui_request</code> 在飞书弹出交互卡片，用户点选（input/editor 可文字 freeform）后回填 agent；pending ask 期间暂停 idle 看门狗。</li>
+  <li><b>OpenCode 工具权限</b>（ADR-0011）：默认 <code>full</code> 自动 <code>always</code> 放行；<code>workspace</code>/<code>read-only</code> 时 SSE <code>permission.asked</code> → 飞书卡 → <code>POST /permission/{id}/reply</code>。</li>
   <li><b>三层健壮性</b>：SDK 重连 + supervisor 半死连接检测 + run 级 idle 看门狗；opencode 另加 SSE 帧看门狗（75s 无帧强制重连）与 3s 轮询回补（以服务端消息列表对账，丢帧文本自动补回）。</li>
   <li><b>运维闭环</b>：进程注册表 + dashboard + 自升级。</li>
 </ul>
@@ -952,100 +953,15 @@
     └── &lt;name&gt;/
         └── default/               # 默认工作目录</code></pre>
 
-<h2 id="s10"><span class="no">10</span>私聊任务自动建群（ADR-0006）</h2>
-<p>私聊是「任务入口」：用户在私聊里发出<b>明确的任务</b>时，桥接器自动创建一个专属群（bot 为群主并拉用户入群），私聊里收到一张带<b>一键跳转群会话</b>按钮的卡片，任务在群里<b>自动启动</b>——不需要进群后重述诉求。闲聊与快速问答留在私聊直接回复，不建群。</p>
-<p>判定由纯启发式函数 <code>LooksLikeTask</code>（<code>internal/bridge/classify.go</code>）完成：带附件即任务；完全匹配的闲聊短句不建群；命中动作关键词（帮我 / 修复 / 实现 / 分析 / fix / implement…）即任务；≥20 字长消息兜底算任务。相比 LLM 判定：零延迟、零成本、表驱动单测可覆盖，误判代价可控。</p>
-
-<div class="fig">
-<svg viewBox="0 0 960 660" width="900" role="img" aria-label="私聊任务自动建群流程图">
-  <defs>
-    <marker id="ar13" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
-      <path d="M0,0 L7,3.5 L0,7 Z" fill="#57606a"/>
-    </marker>
-    <marker id="ar13b" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
-      <path d="M0,0 L7,3.5 L0,7 Z" fill="#2563eb"/>
-    </marker>
-    <marker id="ar13p" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
-      <path d="M0,0 L7,3.5 L0,7 Z" fill="#a855f7"/>
-    </marker>
-    <marker id="ar13t" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
-      <path d="M0,0 L7,3.5 L0,7 Z" fill="#0d9488"/>
-    </marker>
-    <marker id="ar13g" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto">
-      <path d="M0,0 L7,3.5 L0,7 Z" fill="#16a34a"/>
-    </marker>
-  </defs>
-
-  <!-- A 用户私聊消息 -->
-  <rect x="380" y="30" width="200" height="60" rx="10" fill="#ffffff" stroke="#57606a" stroke-width="1.5"/>
-  <text x="480" y="55" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1f2328">用户私聊消息</text>
-  <text x="480" y="74" text-anchor="middle" font-size="11" fill="#57606a">p2p · 非命令 · 非快捷回复</text>
-
-  <!-- B 判定 -->
-  <rect x="360" y="140" width="240" height="80" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
-  <text x="480" y="166" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1e40af">LooksLikeTask 判定</text>
-  <text x="480" y="185" text-anchor="middle" font-size="10.5" fill="#3b82f6">附件即任务 · 闲聊短句排除</text>
-  <text x="480" y="202" text-anchor="middle" font-size="10.5" fill="#3b82f6">动作关键词 · ≥20 字兜底</text>
-
-  <!-- C-left 私聊直接运行 -->
-  <rect x="120" y="280" width="260" height="60" rx="10" fill="#f6f8fa" stroke="#94a3b8" stroke-width="1.3"/>
-  <text x="250" y="305" text-anchor="middle" font-size="12.5" font-weight="700" fill="#475569">留在私聊直接运行</text>
-  <text x="250" y="324" text-anchor="middle" font-size="11" fill="#64748b">闲聊 / 快速问答 · p2p scope</text>
-
-  <!-- C-right 建群 -->
-  <rect x="580" y="280" width="260" height="60" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
-  <text x="710" y="305" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1e40af">chat.create 建群</text>
-  <text x="710" y="324" text-anchor="middle" font-size="11" fill="#3b82f6">bot 群主 · 拉用户 · 群名取任务前 20 字</text>
-
-  <!-- D1 跳转卡片 -->
-  <rect x="60" y="420" width="250" height="60" rx="10" fill="#fdf4ff" stroke="#a855f7" stroke-width="1.5"/>
-  <text x="185" y="445" text-anchor="middle" font-size="12.5" font-weight="700" fill="#7e22ce">① 私聊发跳转卡片</text>
-  <text x="185" y="464" text-anchor="middle" font-size="10.5" fill="#9333ea">按钮 open_url → applink 一键进群</text>
-
-  <!-- D2 群欢迎 -->
-  <rect x="355" y="420" width="250" height="60" rx="10" fill="#f0fdfa" stroke="#0d9488" stroke-width="1.5"/>
-  <text x="480" y="445" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0f766e">② 群欢迎消息</text>
-  <text x="480" y="464" text-anchor="middle" font-size="10.5" fill="#14b8a6">工作目录 + 任务上下文</text>
-
-  <!-- D3 任务启动 -->
-  <rect x="650" y="420" width="250" height="60" rx="10" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
-  <text x="775" y="445" text-anchor="middle" font-size="12.5" font-weight="700" fill="#15803d">③ 任务自动启动</text>
-  <text x="775" y="464" text-anchor="middle" font-size="10.5" fill="#22c55e">消息转入群 scope 队列 → runBatch</text>
-
-  <!-- E 例外与降级 -->
-  <rect x="120" y="530" width="720" height="104" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
-  <text x="140" y="554" font-size="12" font-weight="700" fill="#1f2328">例外与降级</text>
-  <text x="140" y="574" font-size="11" fill="#57606a">· /bind 绑定过 CLI 会话的私聊：尊重绑定，不升级建群</text>
-  <text x="140" y="592" font-size="11" fill="#57606a">· 建群失败（缺 im:chat 权限等）：降级为私聊直接处理并提示，消息不丢</text>
-  <text x="140" y="610" font-size="11" fill="#57606a">· 建群后 15s 窗口内的跟发消息：等待建群结果后并入同一群（不重复建群）</text>
-  <text x="140" y="628" font-size="11" fill="#57606a">· /new chat [名称]：显式建群命令，随时手动兜底（对齐原版 TS）</text>
-
-  <!-- 连线（横平竖直 + 圆角折弯，车道分离不交叉） -->
-  <!-- A → B -->
-  <path d="M 480 90 V 138" fill="none" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar13)"/>
-
-  <!-- B → C-left（否） -->
-  <path d="M 420 220 V 240 Q 420 250 410 250 H 260 Q 250 250 250 260 V 278" fill="none" stroke="#57606a" stroke-width="1.5" marker-end="url(#ar13)"/>
-  <text x="335" y="242" text-anchor="middle" font-size="10.5" fill="#57606a">否 · 闲聊 / 已绑定</text>
-
-  <!-- B → C-right（是） -->
-  <path d="M 540 220 V 240 Q 540 250 550 250 H 700 Q 710 250 710 260 V 278" fill="none" stroke="#2563eb" stroke-width="1.5" marker-end="url(#ar13b)"/>
-  <text x="625" y="242" text-anchor="middle" font-size="10.5" fill="#1e40af">是 · 明确任务</text>
-
-  <!-- C-right → D1：x590 车道 → y385 横线 → x185 下落 -->
-  <path d="M 590 340 V 375 Q 590 385 580 385 H 195 Q 185 385 185 395 V 418" fill="none" stroke="#a855f7" stroke-width="1.5" marker-end="url(#ar13p)"/>
-  <text x="385" y="378" text-anchor="middle" font-size="10.5" fill="#7e22ce">① 跳转卡片回私聊</text>
-
-  <!-- C-right → D2：x650 车道 → y400 横线 → x480 下落 -->
-  <path d="M 650 340 V 390 Q 650 400 640 400 H 490 Q 480 400 480 410 V 418" fill="none" stroke="#0d9488" stroke-width="1.5" marker-end="url(#ar13t)"/>
-  <text x="565" y="393" text-anchor="middle" font-size="10.5" fill="#0f766e">② 欢迎消息进群</text>
-
-  <!-- C-right → D3：x710 车道直下 -->
-  <path d="M 710 340 V 418" fill="none" stroke="#16a34a" stroke-width="1.5" marker-end="url(#ar13g)"/>
-  <text x="720" y="385" font-size="10.5" fill="#15803d">③ 任务进群启动</text>
-</svg>
-<div class="cap">图 13 · 私聊任务自动建群流程（ADR-0006）</div>
-</div>
+<h2 id="s10"><span class="no">10</span>私聊建群策略（ADR-0012）</h2>
+<p><b>私聊统一话题回复</b>：任意非命令消息进入 p2p scope，流式卡片以用户原消息为根 <code>reply_in_thread</code>，主时间线不被刷屏；会话按话题隔离（ADR-0010）。</p>
+<p><b>不再自动建群</b>：历史 ADR-0006 / ADR-0009 的 <code>LooksLikeTask</code> → <code>escalateP2P</code> 路径已取消（ADR-0012）。话题回复已覆盖「组织任务进度」需求，再启发式建群会造成跳转卡 + 群里双份组织、体验重复。</p>
+<p>需要群聊时走<strong>显式命令</strong>：</p>
+<ul>
+  <li><code>/new chat [名称]</code> — 立刻建群并拉用户，私聊话题下发跳转卡；</li>
+  <li><code>/open &lt;序号或 id&gt;</code> — 为 CLI 会话复用已绑定群或新建群（ADR-0007）。</li>
+</ul>
+<p>相关实现：<code>internal/bridge/group.go</code>（跳转卡、群名、<code>handleNewChat</code>），intake 不再调用升级逻辑。</p>
 
 <div class="note"><b>设计要点：</b>升级发生在去抖队列<b>之前</b>——把消息 ChatID 改写为新群后再入队，连发消息经 600ms 去抖自然合并成同一批 run；跳转卡片用 <code>https://applink.feishu.cn/client/chat/open?openChatId=&lt;id&gt;</code>，无需分享群链接、一键直达；快捷回复（quick_reply）的私聊提示改用 <code>receive_id_type=open_id</code> 发送，修复了把 open_id 当 chat_id 导致的 230001 invalid receive_id。</div>
 
