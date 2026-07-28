@@ -75,6 +75,9 @@ func assertEventEqual(t *testing.T, idx int, got, want Event) {
 	if got.SessionID != want.SessionID || got.ThreadID != want.ThreadID {
 		t.Errorf("event %d: ids = (%q,%q), want (%q,%q)", idx, got.SessionID, got.ThreadID, want.SessionID, want.ThreadID)
 	}
+	if got.Model != want.Model {
+		t.Errorf("event %d: model = %q, want %q", idx, got.Model, want.Model)
+	}
 	if got.Delta != want.Delta || got.Content != want.Content {
 		t.Errorf("event %d: delta/content = (%q,%q), want (%q,%q)", idx, got.Delta, got.Content, want.Delta, want.Content)
 	}
@@ -124,6 +127,15 @@ func TestTranslateGrokLine(t *testing.T) {
 			line: `{"type":"end","stopReason":"EndTurn","sessionId":"s1","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":3,"reasoning_tokens":7},"total_cost_usd":0.01}`,
 			want: []Event{
 				{Type: EventSystem, SessionID: "s1"},
+				{Type: EventUsage, InputTokens: 10, OutputTokens: 5, CachedInputTokens: 3, ReasoningOutputTokens: 7, CostUSD: 0.01},
+				{Type: EventDone, SessionID: "s1", TerminationReason: TermNormal},
+			},
+		},
+		{
+			name: "end with model",
+			line: `{"type":"end","stopReason":"EndTurn","sessionId":"s1","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":3,"reasoning_tokens":7},"modelUsage":{"grok-4.5-build":{"inputTokens":10,"outputTokens":5}},"total_cost_usd":0.01}`,
+			want: []Event{
+				{Type: EventSystem, SessionID: "s1", Model: "grok-4.5-build"},
 				{Type: EventUsage, InputTokens: 10, OutputTokens: 5, CachedInputTokens: 3, ReasoningOutputTokens: 7, CostUSD: 0.01},
 				{Type: EventDone, SessionID: "s1", TerminationReason: TermNormal},
 			},

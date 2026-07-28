@@ -324,6 +324,9 @@ func statsLine(stats *RunStats) map[string]any {
 	if ref := stats.SessionRef(); ref != "" {
 		parts = append(parts, "🆔 "+ref)
 	}
+	if stats.Model != "" {
+		parts = append(parts, "🤖 "+stats.Model)
+	}
 	return noteMd(strings.Join(parts, " · "))
 }
 

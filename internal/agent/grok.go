@@ -51,18 +51,29 @@ func (a *GrokAdapter) Run(opts RunOptions) (Run, error) {
 	return run, nil
 }
 
+type grokEndUsage struct {
+	InputTokens          int `json:"input_tokens"`
+	OutputTokens         int `json:"output_tokens"`
+	ReasoningTokens      int `json:"reasoning_tokens"`
+	CacheReadInputTokens int `json:"cache_read_input_tokens"`
+}
+
+type grokEndModelUsage struct {
+	InputTokens          int     `json:"inputTokens"`
+	OutputTokens         int     `json:"outputTokens"`
+	CacheReadInputTokens int     `json:"cacheReadInputTokens"`
+	ModelCalls           int     `json:"modelCalls"`
+	CostUSD              float64 `json:"costUSD"`
+}
+
 type grokRawEvent struct {
-	Type  string `json:"type"`
-	Data  string `json:"data,omitempty"`
-	Usage *struct {
-		InputTokens          int `json:"input_tokens"`
-		OutputTokens         int `json:"output_tokens"`
-		ReasoningTokens      int `json:"reasoning_tokens"`
-		CacheReadInputTokens int `json:"cache_read_input_tokens"`
-	} `json:"usage,omitempty"`
-	SessionID    string  `json:"sessionId,omitempty"`
-	StopReason   string  `json:"stopReason,omitempty"`
-	TotalCostUSD float64 `json:"total_cost_usd,omitempty"`
+	Type         string                       `json:"type"`
+	Data         string                       `json:"data,omitempty"`
+	Usage        *grokEndUsage                `json:"usage,omitempty"`
+	ModelUsage   map[string]grokEndModelUsage `json:"modelUsage,omitempty"`
+	SessionID    string                       `json:"sessionId,omitempty"`
+	StopReason   string                       `json:"stopReason,omitempty"`
+	TotalCostUSD float64                      `json:"total_cost_usd,omitempty"`
 }
 
 func translateGrokLine(line []byte) []Event {
@@ -82,8 +93,13 @@ func translateGrokLine(line []byte) []Event {
 		}
 	case "end":
 		var out []Event
+		modelName := ""
+		for name := range raw.ModelUsage {
+			modelName = name
+			break
+		}
 		if raw.SessionID != "" {
-			out = append(out, Event{Type: EventSystem, SessionID: raw.SessionID})
+			out = append(out, Event{Type: EventSystem, SessionID: raw.SessionID, Model: modelName})
 		}
 		if raw.Usage != nil {
 			out = append(out, Event{
