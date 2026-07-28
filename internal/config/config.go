@@ -194,6 +194,10 @@ func (p Paths) BindingsFile(profile string) string {
 	return filepath.Join(p.ProfileDir(profile), "bindings.json")
 }
 
+func (p Paths) UserGroupsFile(profile string) string {
+	return filepath.Join(p.ProfileDir(profile), "user-groups.json")
+}
+
 func (p Paths) MediaDir(profile string) string {
 	return filepath.Join(p.ProfileDir(profile), "media")
 }
