@@ -207,6 +207,10 @@ func (p Paths) LogsDir(profile string) string {
 	return filepath.Join(p.ProfileDir(profile), "logs")
 }
 
+func (p Paths) ActiveCardsFile(profile string) string {
+	return filepath.Join(p.ProfileDir(profile), "active-cards.json")
+}
+
 // DefaultWorkspace returns (and creates) the profile-managed default working directory.
 func (p Paths) DefaultWorkspace(profile string) (string, error) {
 	dir := filepath.Join(p.Home, "workspaces", profile, "default")

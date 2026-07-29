@@ -6,6 +6,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -31,6 +32,13 @@ type activeRun struct {
 	startTime time.Time
 	runState  *card.RunState
 	stream    *card.Stream
+}
+
+// activeCardEntry persists one in-flight streaming card so the bridge can
+// clean it up on restart.
+type activeCardEntry struct {
+	ChatID string `json:"chatId"`
+	CardID string `json:"cardId"`
 }
 
 const debounceMs = 600
@@ -67,6 +75,9 @@ type Bridge struct {
 	runsMu     sync.Mutex
 	runs       map[string]*activeRun // scope → run
 	cardScopes map[string]string     // card message id → scope (stop button)
+
+	activeCardsMu   sync.Mutex
+	activeCardsPath string
 
 	pendingRepliesMu sync.Mutex
 	pendingReplies   map[string]*pendingReply // operatorID → pending (quick_reply)
@@ -109,20 +120,21 @@ func NewBridge(
 		return nil, err
 	}
 	b := &Bridge{
-		Paths:       paths,
-		ProfileName: profileName,
-		Profile:     profile,
-		Lark:        larkClient,
-		Agent:       agentAdapter,
-		Bot:         bot,
-		Sessions:    sessions,
-		Workspaces:  workspaces,
-		Bindings:    bindings,
-		Media:       media.NewCache(paths.MediaDir(profileName)),
-		runs:        map[string]*activeRun{},
-		cardScopes:  map[string]string{},
-		Ask:         ask.NewBroker(),
-		scopeRoutes: map[string]ask.Route{},
+		Paths:           paths,
+		ProfileName:     profileName,
+		Profile:         profile,
+		Lark:            larkClient,
+		Agent:           agentAdapter,
+		Bot:             bot,
+		Sessions:        sessions,
+		Workspaces:      workspaces,
+		Bindings:        bindings,
+		Media:           media.NewCache(paths.MediaDir(profileName)),
+		runs:            map[string]*activeRun{},
+		cardScopes:      map[string]string{},
+		Ask:             ask.NewBroker(),
+		scopeRoutes:     map[string]ask.Route{},
+		activeCardsPath: paths.ActiveCardsFile(profileName),
 	}
 	b.Ask.SetDispatcher(&larkAskDispatcher{b: b})
 	b.pending = NewPendingQueue(debounceMs*time.Millisecond, b.flush)
@@ -337,6 +349,7 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 		run.Stop()
 		return fmt.Errorf("创建回复卡片失败: %w", err)
 	}
+	b.saveActiveCard(scope, first.ChatID, stream.CardID())
 	b.clearScopeReaction(scope)
 	b.runsMu.Lock()
 	b.cardScopes[stream.MessageID()] = scope
@@ -475,6 +488,7 @@ eventLoop:
 		runState.Stats.ThreadID = newSess.ThreadID
 	}
 	stream.Update(card.Render(runState, card.RenderOptions{GroupChat: first.ChatType != "p2p"}))
+	b.removeActiveCard(scope)
 	stream.Finish(summaryOf(runState))
 
 	if newSess.SessionID != "" || newSess.ThreadID != "" {
@@ -570,6 +584,70 @@ func (b *Bridge) resolveCwd() (string, error) {
 		return "", fmt.Errorf("工作目录 %s 不存在，请用 /cd 切换", cwd)
 	}
 	return cwd, nil
+}
+
+// CleanupStaleCards finalizes any streaming cards that were left in-flight
+// by the previous bridge instance (crash / ungraceful shutdown).
+func (b *Bridge) CleanupStaleCards() {
+	data, err := os.ReadFile(b.activeCardsPath)
+	if err != nil {
+		return // file absent or unreadable — nothing to clean
+	}
+	var entries map[string]activeCardEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		log.Printf("[cards] 解析旧 active-cards 失败: %v", err)
+		_ = os.Remove(b.activeCardsPath)
+		return
+	}
+	if len(entries) == 0 {
+		return
+	}
+	log.Printf("[cards] 发现 %d 张残留卡片，正在清理…", len(entries))
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	for scope, e := range entries {
+		// Send a final update removing interactive elements first, then
+		// close streaming mode. Ignore errors — old cards may already
+		// be expired.
+		update := card.Render(card.InitialState().MarkInterrupted(), card.RenderOptions{})
+		_ = b.Lark.UpdateCard(ctx, e.CardID, update, 0)
+		_ = b.Lark.FinishStreamingCard(ctx, e.CardID, 1, "bridge 已重启 — 任务中断")
+		log.Printf("[cards] 已清理残留卡片 scope=%s card=%s", scope, e.CardID)
+	}
+	_ = os.Remove(b.activeCardsPath)
+}
+
+func (b *Bridge) saveActiveCard(scope, chatID, cardID string) {
+	entries := b.loadActiveCards()
+	entries[scope] = activeCardEntry{ChatID: chatID, CardID: cardID}
+	b.writeActiveCards(entries)
+}
+
+func (b *Bridge) removeActiveCard(scope string) {
+	entries := b.loadActiveCards()
+	delete(entries, scope)
+	b.writeActiveCards(entries)
+}
+
+func (b *Bridge) loadActiveCards() map[string]activeCardEntry {
+	data, err := os.ReadFile(b.activeCardsPath)
+	if err != nil {
+		return map[string]activeCardEntry{}
+	}
+	var entries map[string]activeCardEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return map[string]activeCardEntry{}
+	}
+	return entries
+}
+
+func (b *Bridge) writeActiveCards(entries map[string]activeCardEntry) {
+	if len(entries) == 0 {
+		_ = os.Remove(b.activeCardsPath)
+		return
+	}
+	data, _ := json.Marshal(entries)
+	_ = os.WriteFile(b.activeCardsPath, data, 0o644)
 }
 
 // Flush persists mutable stores; call on shutdown.

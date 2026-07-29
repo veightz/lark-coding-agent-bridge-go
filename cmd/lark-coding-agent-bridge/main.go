@@ -168,6 +168,9 @@ func run(profileName, agentKind, workspace, appID string) error {
 
 	// Register in the local process registry (dashboard reads this).
 	deregister := registry.Register(paths, profileName, adapter.ID(), br.Workspaces.Get())
+
+	// Clean up streaming cards left behind by a previous ungraceful shutdown.
+	br.CleanupStaleCards()
 	defer deregister()
 
 	// Event intake over the WebSocket long connection, wrapped by the
@@ -204,15 +207,17 @@ func run(profileName, agentKind, workspace, appID string) error {
 	fmt.Printf("version:   %s\n", buildinfo.Current().Short())
 	fmt.Println("\n正在监听消息。按 Ctrl+C 退出。")
 
-	// Graceful shutdown: flush state on SIGINT/SIGTERM.
+	// Graceful shutdown: stop the supervisor (which stops accepting new
+	// events), then flush state. The running goroutines will finish with
+	// their deferred card cleanup before the process exits.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
 		fmt.Println("\n正在退出…")
 		sup.Stop()
+		br.CleanupStaleCards()
 		br.Flush()
-		os.Exit(0)
 	}()
 
 	sup.Run(context.Background())

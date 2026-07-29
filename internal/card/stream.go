@@ -76,6 +76,13 @@ func (s *Stream) MessageID() string {
 	return s.msgID
 }
 
+// CardID is the card entity id (valid after Start).
+func (s *Stream) CardID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cardID
+}
+
 // Update records the newest card snapshot; the loop pushes it throttled.
 func (s *Stream) Update(card map[string]any) {
 	s.mu.Lock()
