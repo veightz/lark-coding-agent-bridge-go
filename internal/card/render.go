@@ -164,6 +164,11 @@ func toolPanel(tool *ToolEntry, expanded bool) map[string]any {
 	if tool.Status == ToolError {
 		border = "red"
 	}
+	// Subagent (Task/Agent) calls are always expanded so the user can
+	// see what the subagent actually did.
+	if tool.Name == "Task" || tool.Name == "Agent" {
+		expanded = true
+	}
 	body := toolBodyMd(tool)
 	if body == "" {
 		body = "_无输出_"
@@ -455,8 +460,14 @@ func toolBodyMd(tool *ToolEntry) string {
 	if inputMd := renderInput(tool); inputMd != "" {
 		parts = append(parts, inputMd)
 	}
+	om := outputMax
+	btm := bodyTotalMax
+	if tool.Name == "Task" || tool.Name == "Agent" {
+		om = outputMax * 3
+		btm = bodyTotalMax * 3
+	}
 	if tool.Output != "" {
-		truncated := truncate(tool.Output, outputMax)
+		truncated := truncate(tool.Output, om)
 		if tool.Status == ToolError {
 			parts = append(parts, "**Error**\n```\n"+truncated+"\n```")
 		} else {
@@ -470,10 +481,10 @@ func toolBodyMd(tool *ToolEntry) string {
 		parts = append(parts, "_运行中…"+suffix+"_")
 	}
 	body := strings.Join(parts, "\n\n")
-	if len(body) <= bodyTotalMax {
+	if len(body) <= btm {
 		return body
 	}
-	return body[:bodyTotalMax] + "…\n\n_（body 已截断）_"
+	return body[:btm] + "…\n\n_（body 已截断）_"
 }
 
 func inputString(input any, key string, max int) string {
