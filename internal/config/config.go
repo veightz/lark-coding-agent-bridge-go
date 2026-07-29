@@ -36,6 +36,7 @@ const (
 	AgentPi       AgentKind = "pi"
 	AgentOpenCode AgentKind = "opencode"
 	AgentGrok     AgentKind = "grok"
+	AgentKimi     AgentKind = "kimi"
 )
 
 // AccessLevel mirrors the original bridge's permission modes.

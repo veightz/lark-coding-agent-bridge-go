@@ -48,6 +48,9 @@ func (a *GrokAdapter) Run(opts RunOptions) (Run, error) {
 	if err != nil {
 		return nil, err
 	}
+	if opts.Model != "" {
+		safeSend(run.events, Event{Type: EventSystem, Model: opts.Model})
+	}
 	return run, nil
 }
 

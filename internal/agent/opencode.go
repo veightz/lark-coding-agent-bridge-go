@@ -78,15 +78,20 @@ func (a *OpenCodeAdapter) Run(opts RunOptions) (Run, error) {
 
 	run := srv.registerRun(sessionID, opts.Cwd, opts.Access)
 
+	model := opts.Model
+	if model == "" {
+		model = srv.fetchSessionModel(sessionID, opts.Cwd)
+	}
+
 	body := map[string]any{
 		"parts": []map[string]any{{"type": "text", "text": opts.Prompt}},
 	}
 	if sys := BuildSystemPrompt(a.botIdentity); sys != "" {
 		body["system"] = sys
 	}
-	if opts.Model != "" {
-		if provider, model, ok := splitModel(opts.Model); ok {
-			body["model"] = map[string]any{"providerID": provider, "modelID": model}
+	if model != "" {
+		if provider, m, ok := splitModel(model); ok {
+			body["model"] = map[string]any{"providerID": provider, "modelID": m}
 		}
 	}
 	// Attach local images as file parts (opencode reads them from disk).
@@ -104,7 +109,7 @@ func (a *OpenCodeAdapter) Run(opts RunOptions) (Run, error) {
 	}
 	// 立刻把 sessionID 回传给 bridge，才能写入 sessions.json / bindings.json
 	//（opencode SSE 事件本身不携带“新建会话”系统帧，与 pi 一样由适配器补发）。
-	safeSend(run.events, Event{Type: EventSystem, SessionID: sessionID})
+	safeSend(run.events, Event{Type: EventSystem, SessionID: sessionID, Model: model})
 	// SSE 是快路径，轮询是兜底：丢帧/半死流也能把结果轮询回来。
 	go srv.pollRun(run)
 	return run, nil
@@ -161,6 +166,32 @@ func (a *OpenCodeAdapter) sessionFor(srv *ocServer, opts RunOptions) (string, er
 	}
 	a.sessions[key] = resp.ID
 	return resp.ID, nil
+}
+
+// fetchSessionModel 从 opencode server 查询指定会话使用的模型。
+func (s *ocServer) fetchSessionModel(sessionID, directory string) string {
+	url := s.base + "/session/" + sessionID + "?directory=" + urlQueryEscape(directory)
+	resp, err := s.client.Get(url)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var out struct {
+		Model struct {
+			ID         string `json:"id"`
+			ProviderID string `json:"providerID"`
+		} `json:"model"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return ""
+	}
+	if out.Model.ProviderID == "" || out.Model.ID == "" {
+		return ""
+	}
+	return out.Model.ProviderID + "/" + out.Model.ID
 }
 
 // ensureServer starts (or restarts) the opencode serve process.

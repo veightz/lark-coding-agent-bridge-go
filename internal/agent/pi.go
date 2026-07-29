@@ -396,8 +396,8 @@ func (ps *piSession) startRun(opts RunOptions) (Run, error) {
 		return nil, err
 	}
 
-	if sessionID != "" {
-		safeSend(ch, Event{Type: EventSystem, SessionID: sessionID})
+	if sessionID != "" || opts.Model != "" {
+		safeSend(ch, Event{Type: EventSystem, SessionID: sessionID, Model: opts.Model})
 	}
 	return &piRun{ps: ps, events: ch, settled: slot.settled}, nil
 }

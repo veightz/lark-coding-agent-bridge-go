@@ -388,12 +388,18 @@ eventLoop:
 				if evt.ThreadID != "" {
 					newSess.ThreadID = evt.ThreadID
 				}
+				if evt.Model != "" {
+					newSess.Model = evt.Model
+				}
 			case agent.EventDone:
 				if evt.SessionID != "" {
 					newSess.SessionID = evt.SessionID
 				}
 				if evt.ThreadID != "" {
 					newSess.ThreadID = evt.ThreadID
+				}
+				if evt.Model != "" {
+					newSess.Model = evt.Model
 				}
 			}
 			stream.Update(card.Render(runState, card.RenderOptions{StopButton: true, GroupChat: first.ChatType != "p2p"}))

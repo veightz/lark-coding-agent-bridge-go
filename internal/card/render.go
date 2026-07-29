@@ -71,9 +71,12 @@ func Render(state *RunState, opts RenderOptions) map[string]any {
 	}
 
 	if state.Terminal == TerminalRunning {
-		// Show session id as soon as known — don't wait for the run to finish.
+		// Show session id and model as soon as known — don't wait for the run to finish.
 		if ref := state.Stats.SessionRef(); ref != "" {
 			elements = append(elements, noteMd("🆔 "+ref))
+		}
+		if state.Stats.Model != "" {
+			elements = append(elements, noteMd("🤖 "+state.Stats.Model))
 		}
 		if state.Footer != FooterNone {
 			elements = append(elements, footerStatus(state.Footer, state))

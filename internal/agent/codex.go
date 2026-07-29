@@ -90,7 +90,7 @@ func (a *CodexAdapter) Run(opts RunOptions) (Run, error) {
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = opts.Cwd
 
-	translator := &codexTranslator{}
+	translator := &codexTranslator{model: opts.Model}
 	prompt := PrefixSystemPrompt(opts.Prompt, a.botIdentity)
 
 	return startProc(cmd, prompt, opts.StopGraceMs, mergeEnv(a.Env), translator.translate, func(msg string) Event {
@@ -102,6 +102,7 @@ func (a *CodexAdapter) Run(opts RunOptions) (Run, error) {
 // Ported from the original jsonl.ts CodexJsonlTranslator.
 type codexTranslator struct {
 	threadID            string
+	model               string
 	terminal            bool
 	lastNonTerminalErr  string
 	pendingAgentMessage string
@@ -127,7 +128,7 @@ func (t *codexTranslator) translate(line []byte) []Event {
 	case "thread.started":
 		if id, ok := raw["thread_id"].(string); ok && id != "" {
 			t.threadID = id
-			return []Event{{Type: EventSystem, ThreadID: id}}
+			return []Event{{Type: EventSystem, ThreadID: id, Model: t.model}}
 		}
 	case "turn.started":
 		return nil
