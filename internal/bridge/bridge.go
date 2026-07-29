@@ -350,29 +350,43 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 	stopped := false
 	idleFired := false
 	eventsCh := run.Events()
-eventLoop:
-	for {
-		idleMins := b.Profile.IdleTimeout()
-		var idleC <-chan time.Time
-		var idleTimer *time.Timer
-		// Pause idle watchdog while a Feishu ask card is awaiting the user.
-		pendingAsk := b.Ask != nil && b.Ask.PendingCountForScope(scope) > 0
-		if idleMins > 0 && !pendingAsk {
+
+	heartbeat := time.NewTicker(1 * time.Second)
+	defer heartbeat.Stop()
+
+	idleMins := b.Profile.IdleTimeout()
+	var idleC <-chan time.Time
+	var idleTimer *time.Timer
+	resetIdle := func() {
+		if idleTimer != nil {
+			idleTimer.Stop()
+		}
+		if idleMins > 0 {
 			idleTimer = time.NewTimer(time.Duration(idleMins) * time.Minute)
 			idleC = idleTimer.C
+		} else {
+			idleC = nil
 		}
+	}
+	resetIdle()
+
+eventLoop:
+	for {
+		pendingAsk := b.Ask != nil && b.Ask.PendingCountForScope(scope) > 0
 		select {
 		case evt, ok := <-eventsCh:
-			if idleTimer != nil {
-				idleTimer.Stop()
+			if !pendingAsk {
+				resetIdle()
 			}
 			if !ok {
 				break eventLoop
 			}
 			if evt.Type == agent.EventAskUser {
-				// Block this loop until the user answers so idle doesn't fire
-				// mid-question; OpenCode keeps the turn open server-side.
+				if idleTimer != nil {
+					idleTimer.Stop()
+				}
 				b.handleAskUser(scope, first.ChatID, first.MessageID, inThread, evt)
+				resetIdle()
 				continue
 			}
 			runState = runState.Reduce(evt)
@@ -403,22 +417,36 @@ eventLoop:
 				}
 			}
 			stream.Update(card.Render(runState, card.RenderOptions{StopButton: true, GroupChat: first.ChatType != "p2p"}))
-			// Sync runState for card refresh button (HandleCardAction).
+			b.runsMu.Lock()
+			if ar, ok := b.runs[scope]; ok {
+				ar.runState = runState
+			}
+			b.runsMu.Unlock()
+		case <-heartbeat.C:
+			if runState.Terminal != card.TerminalRunning || pendingAsk {
+				continue
+			}
+			runState.Stats.DurationMs = time.Since(startTime).Milliseconds()
+			if tool := runState.LastRunningTool(); tool != nil {
+				tool.DurationMs = runState.Stats.DurationMs
+			}
+			stream.Update(card.Render(runState, card.RenderOptions{StopButton: true, GroupChat: first.ChatType != "p2p"}))
 			b.runsMu.Lock()
 			if ar, ok := b.runs[scope]; ok {
 				ar.runState = runState
 			}
 			b.runsMu.Unlock()
 		case <-idleC:
-			// Idle watchdog: the agent emitted nothing for the whole
-			// window — kill the run and annotate the card.
+			if pendingAsk {
+				resetIdle()
+				continue
+			}
 			log.Printf("[run] scope=%s idle watchdog fired after %dmin", scope, idleMins)
 			idleFired = true
 			b.runsMu.Lock()
 			delete(b.runs, scope)
 			b.runsMu.Unlock()
 			run.Stop()
-			// Keep reading until the events channel closes.
 		}
 	}
 

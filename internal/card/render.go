@@ -71,6 +71,9 @@ func Render(state *RunState, opts RenderOptions) map[string]any {
 	}
 
 	if state.Terminal == TerminalRunning {
+		if state.Stats.DurationMs > 0 {
+			elements = append(elements, noteMd("⏱ "+formatDuration(state.Stats.DurationMs)))
+		}
 		// Show session id and model as soon as known — don't wait for the run to finish.
 		if ref := state.Stats.SessionRef(); ref != "" {
 			elements = append(elements, noteMd("🆔 "+ref))
