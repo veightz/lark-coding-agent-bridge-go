@@ -71,6 +71,9 @@ func Render(state *RunState, opts RenderOptions) map[string]any {
 	}
 
 	if state.Terminal == TerminalRunning {
+		if state.Stats.Cwd != "" {
+			elements = append(elements, noteMd("📂 "+state.Stats.Cwd))
+		}
 		if state.Stats.DurationMs > 0 {
 			elements = append(elements, noteMd("⏱ "+formatDuration(state.Stats.DurationMs)))
 		}
@@ -323,6 +326,9 @@ func summaryText(state *RunState) string {
 
 func statsLine(stats *RunStats) map[string]any {
 	parts := []string{"⏱ " + formatDuration(stats.DurationMs)}
+	if stats.Cwd != "" {
+		parts = append(parts, "📂 "+stats.Cwd)
+	}
 	if stats.UsageAvailable || stats.TotalTokens() > 0 {
 		parts = append(parts, formatTokenUsage(stats))
 		ctxStr := formatContextUsage(stats)

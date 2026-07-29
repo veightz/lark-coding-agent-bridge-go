@@ -77,6 +77,7 @@ type RunStats struct {
 	CostUSD               float64 // agent-reported cost in USD
 	CostCNY               float64 // calculated cost in CNY from pricing table
 	Model                 string  // model name from EventSystem
+	Cwd                   string  // working directory
 	UsageAvailable        bool    // true if any usage data was reported
 	// Agent conversation handles (for footer: tell runs/sessions apart).
 	SessionID string // claude / pi / opencode session id

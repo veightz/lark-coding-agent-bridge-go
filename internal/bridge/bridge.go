@@ -312,6 +312,7 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 	// 私聊：以用户原消息为根创建话题，流式卡片回复在话题内。
 	stream := card.NewStream(b.Lark, first.ChatID, first.MessageID, inThread)
 	runState := card.InitialState()
+	runState.Stats.Cwd = cwd
 	// 续聊时立刻带上已知 session，卡片首帧就能显示 🆔，不必等跑完。
 	if sess.SessionID != "" {
 		runState.Stats.SessionID = sess.SessionID
