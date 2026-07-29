@@ -81,6 +81,15 @@ func Render(state *RunState, opts RenderOptions) map[string]any {
 		if state.Stats.Model != "" {
 			elements = append(elements, noteMd("🤖 "+state.Stats.Model))
 		}
+		if state.Stats.UsageAvailable && state.Stats.ContextTokens() > 0 {
+			cw := pricing.ContextWindow(state.Stats.Model)
+			if cw > 0 {
+				pct := float64(state.Stats.ContextTokens()) * 100 / float64(cw)
+				elements = append(elements, noteMd(fmt.Sprintf("ctx %.1f%%", pct)))
+			} else {
+				elements = append(elements, noteMd(fmt.Sprintf("ctx %d token", state.Stats.ContextTokens())))
+			}
+		}
 		if state.Footer != FooterNone {
 			elements = append(elements, footerStatus(state.Footer, state))
 		}
