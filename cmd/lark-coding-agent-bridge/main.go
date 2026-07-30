@@ -149,19 +149,21 @@ func run(profileName, agentKind, workspace, appID string) error {
 	// Chat access owner (ADR-0013): resolve Feishu app owner for whitelist.
 	br.StartOwnerRefresh()
 
-	// Ask IPC + Claude hook install (ADR-0008). Best-effort: failure only
-	// disables Claude AskUserQuestion takeover, not the whole bridge.
-	askSrv := &ask.Server{Broker: br.Ask, Resolve: br.ResolveScopeRoute}
-	if askURL, aerr := askSrv.StartListen(); aerr != nil {
-		log.Printf("[ask] loopback 服务启动失败: %v", aerr)
-	} else {
-		br.AskURL = askURL
-		defer askSrv.Close()
-		if self, e := os.Executable(); e == nil {
-			if path, ierr := ask.InstallClaudeAskHook(paths, profileName, self); ierr != nil {
-				log.Printf("[ask] 安装 Claude hook 失败: %v", ierr)
-			} else {
-				log.Printf("[ask] Claude AskUserQuestion hook → %s (ipc %s)", path, askURL)
+	// Ask IPC + Claude hook install (ADR-0008). Codex/OpenCode/Pi handle asks
+	// in-process and must not receive Claude settings or create hook files.
+	if profile.AgentKind == config.AgentClaude {
+		askSrv := &ask.Server{Broker: br.Ask, Resolve: br.ResolveScopeRoute}
+		if askURL, aerr := askSrv.StartListen(); aerr != nil {
+			log.Printf("[ask] loopback 服务启动失败: %v", aerr)
+		} else {
+			br.AskURL = askURL
+			defer askSrv.Close()
+			if self, e := os.Executable(); e == nil {
+				if path, ierr := ask.InstallClaudeAskHook(paths, profileName, self); ierr != nil {
+					log.Printf("[ask] 安装 Claude hook 失败: %v", ierr)
+				} else {
+					log.Printf("[ask] Claude AskUserQuestion hook → %s (ipc %s)", path, askURL)
+				}
 			}
 		}
 	}

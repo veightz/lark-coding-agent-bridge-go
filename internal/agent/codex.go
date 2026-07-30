@@ -3,7 +3,6 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
-	"os/exec"
 
 	"lark-coding-agent-bridge-go/internal/config"
 )
@@ -32,70 +31,12 @@ func codexSandboxMode(access config.AccessLevel) string {
 	}
 }
 
-// buildCodexArgs mirrors the original argv.ts ordering.
-func buildCodexArgs(opts RunOptions) ([]string, error) {
-	sandbox := codexSandboxMode(opts.Access)
-
-	globalFlags := []string{
-		"--sandbox", sandbox,
-	}
-	if opts.Model != "" {
-		globalFlags = append(globalFlags, "--model", opts.Model)
-	}
-	globalFlags = append(globalFlags,
-		"-c", `approval_policy="never"`,
-		"-c", `shell_environment_policy.inherit="all"`,
-		"--ignore-rules",
-		"--skip-git-repo-check",
-		"-C", opts.Cwd,
-	)
-
-	var imageFlags []string
-	for _, img := range opts.Images {
-		imageFlags = append(imageFlags, "--image", img)
-	}
-
-	if opts.ThreadID != "" {
-		args := []string{"exec"}
-		args = append(args, globalFlags...)
-		args = append(args, "resume", "--json")
-		args = append(args, imageFlags...)
-		args = append(args, opts.ThreadID, "-")
-		return args, nil
-	}
-
-	args := []string{"exec", "--json"}
-	args = append(args, globalFlags...)
-	args = append(args, imageFlags...)
-	if len(imageFlags) > 0 {
-		args = append(args, "--")
-	}
-	args = append(args, "-")
-	return args, nil
-}
-
 func (a *CodexAdapter) Run(opts RunOptions) (Run, error) {
 	if opts.Cwd == "" {
 		return nil, fmt.Errorf("cwd is required for CodexAdapter.Run")
 	}
-	args, err := buildCodexArgs(opts)
-	if err != nil {
-		return nil, err
-	}
-
-	binary := a.binary
-	if binary == "" {
-		binary = "codex"
-	}
-	cmd := exec.Command(binary, args...)
-	cmd.Dir = opts.Cwd
-
-	translator := &codexTranslator{model: opts.Model}
 	prompt := PrefixSystemPrompt(opts.Prompt, a.botIdentity)
-
-	return startProc(cmd, prompt, opts.StopGraceMs, mergeEnv(a.Env), translator.translate, func(msg string) Event {
-		return Event{Type: EventError, Message: msg, TerminationReason: TermFailed}
-	})
+	return startCodexAppServer(a.binary, prompt, opts, mergeEnv(mergeEnvMaps(a.Env, opts.Env)))
 }
 
 // codexTranslator converts codex exec --json JSONL into AgentEvents.
@@ -104,9 +45,8 @@ type codexTranslator struct {
 	threadID            string
 	model               string
 	terminal            bool
-	lastNonTerminalErr  string
 	pendingAgentMessage string
-	startedItems        map[string]bool
+	startedItems        map[string]string
 }
 
 type codexRawEvent map[string]any
@@ -134,6 +74,10 @@ func (t *codexTranslator) translate(line []byte) []Event {
 		return nil
 	case "item.started":
 		return t.prependPending(t.translateItemStarted(raw))
+	case "item.updated":
+		// Codex currently uses updates for snapshots such as todo lists.
+		// The started/completed pair remains authoritative for card state.
+		return nil
 	case "item.completed":
 		return t.translateItemCompleted(raw)
 	case "agent_message":
@@ -145,34 +89,25 @@ func (t *codexTranslator) translate(line []byte) []Event {
 	case "turn.failed":
 		return t.prependPending(t.terminalError(raw, "codex turn failed"))
 	case "error":
-		if msg := errorMessage(raw, "codex error"); msg != "" {
-			t.lastNonTerminalErr = msg
-		}
-		return nil
+		return t.prependPending(t.terminalError(raw, "codex error"))
 	}
 	return nil
 }
 
 func (t *codexTranslator) translateItemStarted(raw codexRawEvent) []Event {
 	item, _ := raw["item"].(map[string]any)
-	if item == nil || item["type"] != "command_execution" {
+	if item == nil {
 		return nil
 	}
-	id, _ := item["id"].(string)
-	if id == "" {
+	evt, ok := codexToolUse(item)
+	if !ok {
 		return nil
 	}
 	if t.startedItems == nil {
-		t.startedItems = map[string]bool{}
+		t.startedItems = map[string]string{}
 	}
-	t.startedItems[id] = true
-	command, _ := item["command"].(string)
-	return []Event{{
-		Type:  EventToolUse,
-		ID:    id,
-		Name:  "command_execution",
-		Input: map[string]any{"command": command},
-	}}
+	t.startedItems[evt.ID] = evt.Name
+	return []Event{evt}
 }
 
 func (t *codexTranslator) translateItemCompleted(raw codexRawEvent) []Event {
@@ -186,24 +121,198 @@ func (t *codexTranslator) translateItemCompleted(raw codexRawEvent) []Event {
 			return t.queueAgentMessage(msg)
 		}
 		return nil
+	case "reasoning", "plan":
+		if text := stringField(item, "text"); text != "" {
+			return t.prependPending([]Event{{Type: EventThinking, Delta: text}})
+		}
+		return nil
 	case "command_execution":
-		id, _ := item["id"].(string)
-		if id == "" {
-			return nil
-		}
-		delete(t.startedItems, id)
-		exitCode := -1
-		if ec, ok := item["exit_code"].(float64); ok {
-			exitCode = int(ec)
-		}
-		return t.prependPending([]Event{{
-			Type:    EventToolResult,
-			ID:      id,
-			Output:  stringField(item, "output", "aggregated_output", "stdout"),
-			IsError: exitCode > 0,
-		}})
+		return t.prependPending(t.completeTool(item, codexCommandResult(item)))
+	case "file_change":
+		return t.prependPending(t.completeTool(item, codexFileChangeResult(item)))
+	case "mcp_tool_call":
+		return t.prependPending(t.completeTool(item, codexMCPResult(item)))
+	case "web_search":
+		return t.prependPending(t.completeTool(item, codexWebSearchResult(item)))
+	case "collab_tool_call":
+		return t.prependPending(t.completeTool(item, codexCollabResult(item)))
+	case "todo_list":
+		return t.prependPending(t.completeTool(item, Event{
+			Output: codexTodoOutput(item["items"]),
+		}))
+	case "error":
+		return t.prependPending(t.completeTool(item, Event{
+			Output:  stringField(item, "message"),
+			IsError: true,
+		}))
 	}
 	return nil
+}
+
+func (t *codexTranslator) completeTool(item map[string]any, result Event) []Event {
+	use, ok := codexToolUse(item)
+	if !ok {
+		return nil
+	}
+	var out []Event
+	if _, started := t.startedItems[use.ID]; !started {
+		out = append(out, use)
+	}
+	delete(t.startedItems, use.ID)
+	result.Type = EventToolResult
+	result.ID = use.ID
+	out = append(out, result)
+	return out
+}
+
+func codexToolUse(item map[string]any) (Event, bool) {
+	id := stringField(item, "id")
+	if id == "" {
+		return Event{}, false
+	}
+	switch stringField(item, "type") {
+	case "command_execution":
+		return Event{
+			Type:  EventToolUse,
+			ID:    id,
+			Name:  "command_execution",
+			Input: map[string]any{"command": stringField(item, "command")},
+		}, true
+	case "file_change":
+		return Event{
+			Type: EventToolUse,
+			ID:   id,
+			Name: "file_change",
+			Input: map[string]any{
+				"changes": item["changes"],
+			},
+		}, true
+	case "mcp_tool_call":
+		name := "mcp"
+		server, tool := stringField(item, "server"), stringField(item, "tool")
+		if server != "" || tool != "" {
+			name += ":" + server + "/" + tool
+		}
+		return Event{Type: EventToolUse, ID: id, Name: name, Input: item["arguments"]}, true
+	case "web_search":
+		return Event{
+			Type: EventToolUse,
+			ID:   id,
+			Name: "web_search",
+			Input: map[string]any{
+				"query":  stringField(item, "query"),
+				"action": item["action"],
+			},
+		}, true
+	case "collab_tool_call":
+		return Event{
+			Type: EventToolUse,
+			ID:   id,
+			Name: "collab:" + stringField(item, "tool"),
+			Input: map[string]any{
+				"sender_thread_id":    item["sender_thread_id"],
+				"receiver_thread_ids": item["receiver_thread_ids"],
+				"prompt":              item["prompt"],
+			},
+		}, true
+	case "todo_list":
+		return Event{Type: EventToolUse, ID: id, Name: "todo_list", Input: item["items"]}, true
+	case "error":
+		return Event{Type: EventToolUse, ID: id, Name: "codex_error"}, true
+	}
+	return Event{}, false
+}
+
+func codexCommandResult(item map[string]any) Event {
+	exitCode := intField(item, "exit_code")
+	status := stringField(item, "status")
+	return Event{
+		Output:  stringField(item, "aggregated_output", "output", "stdout"),
+		IsError: status == "failed" || status == "declined" || exitCode > 0,
+	}
+}
+
+func codexFileChangeResult(item map[string]any) Event {
+	return Event{
+		Output:  codexChangesOutput(item["changes"]),
+		IsError: stringField(item, "status") == "failed",
+	}
+}
+
+func codexMCPResult(item map[string]any) Event {
+	if errObj, ok := item["error"].(map[string]any); ok {
+		return Event{Output: stringField(errObj, "message"), IsError: true}
+	}
+	status := stringField(item, "status")
+	return Event{
+		Output:  codexJSON(item["result"]),
+		IsError: status == "failed",
+	}
+}
+
+func codexWebSearchResult(item map[string]any) Event {
+	output := codexJSON(item["action"])
+	if output == "" {
+		output = stringField(item, "query")
+	}
+	return Event{Output: output}
+}
+
+func codexCollabResult(item map[string]any) Event {
+	return Event{
+		Output:  codexJSON(item["agents_states"]),
+		IsError: stringField(item, "status") == "failed",
+	}
+}
+
+func codexChangesOutput(value any) string {
+	changes, _ := value.([]any)
+	if len(changes) == 0 {
+		return ""
+	}
+	var out string
+	for _, raw := range changes {
+		change, _ := raw.(map[string]any)
+		if change == nil {
+			continue
+		}
+		if out != "" {
+			out += "\n"
+		}
+		out += stringField(change, "kind") + " " + stringField(change, "path")
+	}
+	return out
+}
+
+func codexTodoOutput(value any) string {
+	items, _ := value.([]any)
+	var out string
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item == nil {
+			continue
+		}
+		mark := "☐"
+		if done, _ := item["completed"].(bool); done {
+			mark = "☑"
+		}
+		if out != "" {
+			out += "\n"
+		}
+		out += mark + " " + stringField(item, "text")
+	}
+	return out
+}
+
+func codexJSON(value any) string {
+	if value == nil {
+		return ""
+	}
+	b, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 func (t *codexTranslator) translateTurnCompleted(raw codexRawEvent) []Event {

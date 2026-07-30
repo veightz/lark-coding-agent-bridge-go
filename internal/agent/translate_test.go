@@ -247,25 +247,136 @@ func TestCodexTranslator(t *testing.T) {
 	}
 }
 
-func TestBuildCodexArgs(t *testing.T) {
-	args, err := buildCodexArgs(RunOptions{Cwd: "/repo"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := joinArgs(args)
-	for _, want := range []string{"exec", "--json", "--sandbox danger-full-access", "-C /repo", `approval_policy="never"`} {
-		if !contains(joined, want) {
-			t.Errorf("args missing %q: %s", want, joined)
-		}
+func TestCodexTranslatorExtendedItems(t *testing.T) {
+	tests := []struct {
+		name  string
+		lines []string
+		check func(*testing.T, []Event)
+	}{
+		{
+			name: "reasoning",
+			lines: []string{
+				`{"type":"item.completed","item":{"id":"r1","type":"reasoning","text":"检查依赖关系"}}`,
+			},
+			check: func(t *testing.T, got []Event) {
+				if len(got) != 1 || got[0].Type != EventThinking || got[0].Delta != "检查依赖关系" {
+					t.Fatalf("events = %+v", got)
+				}
+			},
+		},
+		{
+			name: "command failed by status",
+			lines: []string{
+				`{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"false","aggregated_output":"nope","exit_code":null,"status":"failed"}}`,
+			},
+			check: func(t *testing.T, got []Event) {
+				if len(got) != 2 || got[0].Type != EventToolUse || got[1].Type != EventToolResult {
+					t.Fatalf("events = %+v", got)
+				}
+				if !got[1].IsError || got[1].Output != "nope" {
+					t.Fatalf("result = %+v", got[1])
+				}
+			},
+		},
+		{
+			name: "file change without started",
+			lines: []string{
+				`{"type":"item.completed","item":{"id":"p1","type":"file_change","changes":[{"path":"a.go","kind":"update"},{"path":"b.go","kind":"add"}],"status":"completed"}}`,
+			},
+			check: func(t *testing.T, got []Event) {
+				if len(got) != 2 || got[0].Name != "file_change" {
+					t.Fatalf("events = %+v", got)
+				}
+				if got[1].Output != "update a.go\nadd b.go" || got[1].IsError {
+					t.Fatalf("result = %+v", got[1])
+				}
+			},
+		},
+		{
+			name: "mcp tool",
+			lines: []string{
+				`{"type":"item.started","item":{"id":"m1","type":"mcp_tool_call","server":"docs","tool":"search","arguments":{"q":"codex"},"status":"in_progress"}}`,
+				`{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"docs","tool":"search","arguments":{"q":"codex"},"result":{"content":[{"type":"text","text":"ok"}],"structured_content":null},"error":null,"status":"completed"}}`,
+			},
+			check: func(t *testing.T, got []Event) {
+				if len(got) != 2 || got[0].Name != "mcp:docs/search" {
+					t.Fatalf("events = %+v", got)
+				}
+				if got[1].Type != EventToolResult || got[1].IsError || !strings.Contains(got[1].Output, `"text":"ok"`) {
+					t.Fatalf("result = %+v", got[1])
+				}
+			},
+		},
+		{
+			name: "web search",
+			lines: []string{
+				`{"type":"item.started","item":{"id":"w1","type":"web_search","query":"Codex CLI","action":{"type":"search","query":"Codex CLI"}}}`,
+				`{"type":"item.completed","item":{"id":"w1","type":"web_search","query":"Codex CLI","action":{"type":"search","query":"Codex CLI"}}}`,
+			},
+			check: func(t *testing.T, got []Event) {
+				if len(got) != 2 || got[0].Name != "web_search" || !strings.Contains(got[1].Output, `"type":"search"`) {
+					t.Fatalf("events = %+v", got)
+				}
+			},
+		},
+		{
+			name: "collab tool",
+			lines: []string{
+				`{"type":"item.started","item":{"id":"a1","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"th1","receiver_thread_ids":["th2"],"prompt":"test","agents_states":{},"status":"in_progress"}}`,
+				`{"type":"item.completed","item":{"id":"a1","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"th1","receiver_thread_ids":["th2"],"prompt":"test","agents_states":{"th2":{"status":"completed"}},"status":"completed"}}`,
+			},
+			check: func(t *testing.T, got []Event) {
+				if len(got) != 2 || got[0].Name != "collab:spawn_agent" || !strings.Contains(got[1].Output, `"completed"`) {
+					t.Fatalf("events = %+v", got)
+				}
+			},
+		},
+		{
+			name: "todo list",
+			lines: []string{
+				`{"type":"item.started","item":{"id":"t1","type":"todo_list","items":[{"text":"实现","completed":false}]}}`,
+				`{"type":"item.updated","item":{"id":"t1","type":"todo_list","items":[{"text":"实现","completed":true}]}}`,
+				`{"type":"item.completed","item":{"id":"t1","type":"todo_list","items":[{"text":"实现","completed":true}]}}`,
+			},
+			check: func(t *testing.T, got []Event) {
+				if len(got) != 2 || got[0].Name != "todo_list" || got[1].Output != "☑ 实现" {
+					t.Fatalf("events = %+v", got)
+				}
+			},
+		},
+		{
+			name: "nonfatal item error",
+			lines: []string{
+				`{"type":"item.completed","item":{"id":"e1","type":"error","message":"MCP unavailable"}}`,
+			},
+			check: func(t *testing.T, got []Event) {
+				if len(got) != 2 || got[0].Name != "codex_error" || !got[1].IsError {
+					t.Fatalf("events = %+v", got)
+				}
+			},
+		},
 	}
 
-	args, err = buildCodexArgs(RunOptions{Cwd: "/repo", ThreadID: "th9", Images: []string{"/tmp/a.png"}})
-	if err != nil {
-		t.Fatal(err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := &codexTranslator{}
+			var got []Event
+			for _, line := range tc.lines {
+				got = append(got, tr.translate([]byte(line))...)
+			}
+			tc.check(t, got)
+		})
 	}
-	joined = joinArgs(args)
-	if !contains(joined, "resume --json --image /tmp/a.png th9 -") {
-		t.Errorf("resume args wrong: %s", joined)
+}
+
+func TestCodexTranslatorTopLevelErrorIsTerminal(t *testing.T) {
+	tr := &codexTranslator{}
+	got := tr.translate([]byte(`{"type":"error","message":"authentication failed"}`))
+	if len(got) != 1 || got[0].Type != EventError || got[0].Message != "authentication failed" {
+		t.Fatalf("events = %+v", got)
+	}
+	if more := tr.translate([]byte(`{"type":"turn.completed","usage":{}}`)); more != nil {
+		t.Fatalf("translator emitted after terminal error: %+v", more)
 	}
 }
 

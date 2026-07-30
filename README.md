@@ -22,7 +22,7 @@
 - **消息桥接**：私聊直接发消息，群里 `@bot`，消息转发给本地 agent。
 - **四种 agent**：
   - `claude` — spawn-per-message stream-json（`--resume` 续会话）
-  - `codex` — spawn-per-message `codex exec --json`（`resume` 续会话）
+  - `codex` — spawn-per-message `codex app-server --stdio`（双向 JSON-RPC，thread resume 续会话）
   - `pi` — **常驻 RPC 进程**（每 scope 一个 `pi --mode rpc`，原生 JSONL 协议，`abort` 优雅中断）
   - `opencode` — **常驻 HTTP server**（`opencode serve`，REST + 按工作目录划分的 SSE 事件流，`abort` API 中断，`/global/health` 存活探测）
 - **流式卡片**：回复实时渲染在 CardKit 2.0 流式卡片上（文本、思考、工具调用折叠面板、⏹ 终止按钮）。
@@ -40,7 +40,7 @@
 
 ## 与原版的差异
 
-本复刻覆盖核心链路，以下原版功能**尚未实现**：后台守护进程服务管理、云文档评论、COT 过程消息、`/resume`、`/config` 交互卡片、`/doctor`、卡片回调签名、`/invite all group` 批量拉群、secrets 加密存储（App Secret 明文存于 `config.json`，文件权限 0600）。**访问控制**（owner + `/invite`/`/remove`）已实现（ADR-0013）。Codex 无结构化反问 hook，不接管 AskUserQuestion 类交互（与 botmux 一致）。
+本复刻覆盖核心链路，以下原版功能**尚未实现**：后台守护进程服务管理、云文档评论、COT 过程消息、`/resume`、`/config` 交互卡片、`/doctor`、卡片回调签名、`/invite all group` 批量拉群、secrets 加密存储（App Secret 明文存于 `config.json`，文件权限 0600）。**访问控制**（owner + `/invite`/`/remove`）已实现（ADR-0013）。Codex 的结构化反问、命令/文件修改确认与额外权限申请已通过 app-server 接管（ADR-0014）。
 
 设计与实现文档见 [`docs/design.html`](docs/design.html)（技术设计，含架构/时序/状态机图）与 [`docs/implementation.html`](docs/implementation.html)（关键结构与方法）。
 
@@ -130,4 +130,3 @@ go vet ./...
 ## License
 
 MIT（与原作一致）
-

@@ -612,6 +612,9 @@ func (b *Bridge) forwardToGroup(groupChatID, cardMessageID, userOpenID, text str
 		b.runsMu.Lock()
 		delete(b.runs, scope)
 		b.runsMu.Unlock()
+		if b.Ask != nil {
+			b.Ask.InvalidateScope(scope, "run ended")
+		}
 	}()
 
 	stream := card.NewStream(b.Lark, groupChatID, cardMessageID, false)
@@ -634,6 +637,10 @@ func (b *Bridge) forwardToGroup(groupChatID, cardMessageID, userOpenID, text str
 	newSess := state.Session{Cwd: cwd, Model: sess.Model}
 	eventsCh := run.Events()
 	for evt := range eventsCh {
+		if evt.Type == agent.EventAskUser {
+			b.handleAskUser(scope, groupChatID, cardMessageID, false, evt)
+			continue
+		}
 		runState = runState.Reduce(evt)
 		switch evt.Type {
 		case agent.EventSystem:

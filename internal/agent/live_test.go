@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"lark-coding-agent-bridge-go/internal/config"
 )
 
 // Live tests drive the real CLIs; they need the binaries installed and
@@ -78,6 +80,36 @@ func TestLiveOpenCode(t *testing.T) {
 		Prompt: "Reply with exactly: hello-bridge. Do not use any tools.",
 		Cwd:    t.TempDir(),
 		Model:  "opencode/ling-3.0-flash-free",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := drainWithTimeout(t, run, 120*time.Second)
+	text, done, failed := summarize(events)
+	t.Logf("events=%d done=%v failed=%v text=%q", len(events), done, failed, text)
+	if failed {
+		for _, e := range events {
+			if e.Type == EventError {
+				t.Fatalf("run failed: %s", e.Message)
+			}
+		}
+	}
+	if !done {
+		t.Fatal("no done event")
+	}
+	if text == "" {
+		t.Fatal("no text output")
+	}
+}
+
+func TestLiveCodex(t *testing.T) {
+	liveEnabled(t)
+	a := &CodexAdapter{binary: "codex"}
+	run, err := a.Run(RunOptions{
+		RunID:  "live-codex",
+		Prompt: "Reply with exactly: hello-bridge. Do not use any tools.",
+		Cwd:    t.TempDir(),
+		Access: config.AccessReadOnly,
 	})
 	if err != nil {
 		t.Fatal(err)

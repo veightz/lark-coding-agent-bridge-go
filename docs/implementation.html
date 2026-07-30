@@ -231,18 +231,27 @@ func translateClaudeLine(line []byte) []Event
 // user(tool_result)      → Event{tool_result}
 // result                 → Event{done, Usage}</code></pre>
 
-<h3>3.2 CodexAdapter <span class="file">internal/agent/codex.go</span></h3>
-<pre><code>func (a *CodexAdapter) Run(ctx context.Context, opts RunOptions) (Run, error)
-// argv: codex exec --json --sandbox &lt;mode&gt; -c approval_policy="never"
-//       --skip-git-repo-check -C &lt;cwd&gt; [resume &lt;threadId&gt;] -
+<h3>3.2 CodexAdapter <span class="file">internal/agent/codex.go · codex_appserver.go</span>（ADR-0014）</h3>
+<pre><code>func (a *CodexAdapter) Run(opts RunOptions) (Run, error)
+// spawn: codex app-server --stdio
+// initialize(experimentalApi=true) → initialized
+// thread/start | thread/resume(threadId) → turn/start(text + localImage)
 
-type codexTranslator struct { pendingAgentMessage string /* ... */ }
-// thread.started                          → Event{system, SessionID: threadId}
-// item.started/completed(command_execution)→ tool_use / tool_result
-// item.completed(agent_message)           → 先进 pendingAgentMessage 缓存：
-//     下一条 agent_message 到来时，前一条作为 Event{text} 发出；
-//     turn.completed 时，缓存的最后一条作为 final_text 随 Event{done} 发出</code></pre>
-<div class="note"><b>为什么缓存 agent_message：</b>codex 把中间说明和最终答复都发成 agent_message，无法当场区分。延迟一拍——前一条一定是中间文本，最后一条才是 final_text。</div>
+type codexAppRun struct {
+    cmd/stdin/events/exited
+    pending map[requestID]responseChan
+    threadID, turnID string
+}
+// item/agentMessage/delta              → Event{text}
+// item/reasoning/*Delta                → Event{thinking}
+// item/started + item/completed        → tool_use / tool_result
+// item/tool/requestUserInput            → EventAskUser(Source=codex)
+// commandExecution/fileChange approval  → EventAskUser(Source=codex-permission)
+// permissions/requestApproval           → EventAskUser，允许时回传 requested subset
+// thread/tokenUsage/updated             → Event{usage}
+// turn/completed                        → Event{done|error}
+// Stop                                  → turn/interrupt → grace → SIGTERM/SIGKILL</code></pre>
+<div class="note"><b>权限语义：</b><code>full</code> 使用 danger-full-access + approvalPolicy=never；<code>workspace</code>/<code>read-only</code> 使用对应 sandbox + on-request。卡片 once/always/reject 映射为 accept/acceptForSession/decline，超时与失效均拒绝。</div>
 
 <h3>3.3 PiAdapter / piSession <span class="file">internal/agent/pi.go</span>（常驻 RPC，每 scope 一进程）</h3>
 <pre><code>type PiAdapter struct { /* scope → *piSession 映射，并发安全 */ }
@@ -374,7 +383,8 @@ func (b *Bridge) stopRunByCardMessage(msgID)     // 卡片 ⏹ 按钮 callback�
 //   workspace|read-only → EventAskUser 卡片 once|always|reject
 // Pi：RPC extension_ui_request (select/confirm/input/editor) → EventAskUser → extension_ui_response
 //     input/editor 支持聊天文字 freeform（SubmitComment / tryAnswerAskWithText）
-// Codex：无结构化反问 hook（passthrough）</code></pre>
+// Codex（ADR-0014）：app-server requestUserInput / command+file approval /
+//     permissions approval → EventAskUser → JSON-RPC response（原 request id）</code></pre>
 <p>设计对照：botmux <code>src/core/ask-broker.ts</code> / <code>src/im/lark/ask-card.ts</code> / <code>docs/TEST-GUIDE-ask-hooks.md</code>。</p>
 
 <h3>4.2 防抖合并队列 <span class="file">internal/bridge/queue.go</span></h3>

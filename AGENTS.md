@@ -74,6 +74,7 @@ docs/
 ## 当前未实现（不要误以为是 bug）
 
 后台服务管理、云文档评论、COT 消息、/resume、/config 卡片、secrets 加密、`/invite all group` 批量列举；
-Codex 无结构化反问 hook（与 botmux 一致）；Pi 的 notify/setStatus 等 fire-and-forget UI 不弹卡；Claude/Codex 工具级权限仍走 access mode（不做飞书审批卡）；OpenCode 工具权限已接管（ADR-0011）。
+Pi 的 notify/setStatus 等 fire-and-forget UI 不弹卡；Claude 工具级权限仍走 access mode（不做飞书审批卡）；
+Codex 反问与权限确认已通过 app-server 接管（ADR-0014）；OpenCode 工具权限已接管（ADR-0011）。
 访问控制（owner + `/invite`/`/remove` 白名单）见 ADR-0013。
 详见 `docs/adr/` 与 README「与原版的差异」。

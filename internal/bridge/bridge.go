@@ -295,22 +295,7 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 	}
 	// Claude AskUserQuestion hook routing (ADR-0008).
 	// Root message id: p2p 话题根（TopicRootID），便于卡片/回复挂在同一话题下。
-	if b.AskURL != "" {
-		rootMsgID := first.MessageID
-		if r := first.TopicRootID(); r != "" {
-			rootMsgID = r
-		}
-		runOpts.Env = map[string]string{
-			ask.EnvAskURL:           b.AskURL,
-			ask.EnvAskScope:         scope,
-			ask.EnvAskChatID:        first.ChatID,
-			ask.EnvAskRootMessageID: rootMsgID,
-			ask.EnvAskProfile:       b.ProfileName,
-		}
-		if settings := ask.ClaudeSettingsPath(b.Paths, b.ProfileName); settings != "" {
-			runOpts.ExtraArgs = []string{"--settings", settings}
-		}
-	}
+	configureClaudeAskRunOptions(&runOpts, b.Profile.AgentKind, b.AskURL, b.Paths, b.ProfileName, scope, first)
 	inThread := first.ReplyInThread()
 	b.SetScopeRoute(scope, first.ChatID, first.MessageID, inThread)
 	defer b.ClearScopeRoute(scope)
@@ -509,6 +494,29 @@ eventLoop:
 	return nil
 }
 
+// configureClaudeAskRunOptions injects the Claude-only hook environment and
+// --settings flag. Codex/OpenCode/Pi handle asks in-process and must never
+// receive Claude CLI arguments.
+func configureClaudeAskRunOptions(opts *agent.RunOptions, kind config.AgentKind, askURL string, paths config.Paths, profileName, scope string, first *Message) {
+	if opts == nil || first == nil || askURL == "" || kind != config.AgentClaude {
+		return
+	}
+	rootMsgID := first.MessageID
+	if r := first.TopicRootID(); r != "" {
+		rootMsgID = r
+	}
+	opts.Env = map[string]string{
+		ask.EnvAskURL:           askURL,
+		ask.EnvAskScope:         scope,
+		ask.EnvAskChatID:        first.ChatID,
+		ask.EnvAskRootMessageID: rootMsgID,
+		ask.EnvAskProfile:       profileName,
+	}
+	if settings := ask.ClaudeSettingsPath(paths, profileName); settings != "" {
+		opts.ExtraArgs = []string{"--settings", settings}
+	}
+}
+
 // recordGroupBinding writes the reverse session→group link after a group
 // run. Does not overwrite an explicit binding to a different chat.
 func (b *Bridge) recordGroupBinding(scope, chatID, chatType string, sess state.Session) {
@@ -553,6 +561,9 @@ func (b *Bridge) stopRun(scope string) bool {
 	b.runsMu.Unlock()
 	if !ok {
 		return false
+	}
+	if b.Ask != nil {
+		b.Ask.InvalidateScope(scope, "run stopped")
 	}
 	ar.run.Stop()
 	return true

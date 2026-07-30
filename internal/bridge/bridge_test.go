@@ -11,6 +11,8 @@ import (
 
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 
+	"lark-coding-agent-bridge-go/internal/agent"
+	"lark-coding-agent-bridge-go/internal/ask"
 	"lark-coding-agent-bridge-go/internal/config"
 	"lark-coding-agent-bridge-go/internal/lark"
 	"lark-coding-agent-bridge-go/internal/state"
@@ -76,6 +78,121 @@ func TestPendingQueueBlockAccumulates(t *testing.T) {
 	defer mu.Unlock()
 	if len(batches) != 2 || len(batches[1]) != 2 {
 		t.Fatalf("batches after unblock = %v", batches)
+	}
+}
+
+type stopTestRun struct {
+	stopped chan struct{}
+}
+
+func (r *stopTestRun) Events() <-chan agent.Event {
+	ch := make(chan agent.Event)
+	close(ch)
+	return ch
+}
+func (r *stopTestRun) Stop() {
+	select {
+	case <-r.stopped:
+	default:
+		close(r.stopped)
+	}
+}
+func (*stopTestRun) WaitExit(int) bool { return true }
+
+type stopTestAskDispatcher struct {
+	sent chan *ask.Pending
+}
+
+func (d *stopTestAskDispatcher) Send(p *ask.Pending) (string, string, error) {
+	d.sent <- p
+	return "message", "card", nil
+}
+func (*stopTestAskDispatcher) OnSettle(*ask.Pending, ask.Result) {}
+
+func TestStopRunInvalidatesPendingAsk(t *testing.T) {
+	broker := ask.NewBroker()
+	dispatcher := &stopTestAskDispatcher{sent: make(chan *ask.Pending, 1)}
+	broker.SetDispatcher(dispatcher)
+	run := &stopTestRun{stopped: make(chan struct{})}
+	b := &Bridge{
+		Ask:  broker,
+		runs: map[string]*activeRun{"scope-1": {run: run, scope: "scope-1"}},
+	}
+
+	resultCh := make(chan ask.Result, 1)
+	go func() {
+		result, err := broker.Register(ask.CreateInput{
+			Route: ask.Route{ChatID: "chat-1", Scope: "scope-1"},
+			Questions: []ask.Question{{
+				Prompt:  "继续吗？",
+				Options: []ask.Option{{Key: "yes", Label: "继续"}},
+			}},
+			Source:  "codex",
+			Timeout: time.Minute,
+		})
+		if err != nil {
+			t.Errorf("register ask: %v", err)
+		}
+		resultCh <- result
+	}()
+	select {
+	case <-dispatcher.sent:
+	case <-time.After(time.Second):
+		t.Fatal("ask was not registered")
+	}
+
+	if !b.stopRun("scope-1") {
+		t.Fatal("stopRun returned false")
+	}
+	select {
+	case result := <-resultCh:
+		if result.Kind != ask.KindInvalidated || result.Reason != "run stopped" {
+			t.Fatalf("result = %+v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending ask was not invalidated")
+	}
+	select {
+	case <-run.stopped:
+	default:
+		t.Fatal("run was not stopped")
+	}
+}
+
+func TestConfigureClaudeAskRunOptionsDoesNotLeakIntoCodex(t *testing.T) {
+	first := &Message{MessageID: "om_1", ChatID: "oc_1"}
+	opts := agent.RunOptions{}
+	configureClaudeAskRunOptions(
+		&opts,
+		config.AgentCodex,
+		"http://127.0.0.1:1234",
+		config.Paths{Home: t.TempDir()},
+		"codex-dev",
+		"scope-1",
+		first,
+	)
+	if len(opts.ExtraArgs) != 0 || len(opts.Env) != 0 {
+		t.Fatalf("Codex received Claude hook options: %+v", opts)
+	}
+}
+
+func TestConfigureClaudeAskRunOptionsForClaude(t *testing.T) {
+	first := &Message{MessageID: "om_1", ChatID: "oc_1"}
+	opts := agent.RunOptions{}
+	configureClaudeAskRunOptions(
+		&opts,
+		config.AgentClaude,
+		"http://127.0.0.1:1234",
+		config.Paths{Home: t.TempDir()},
+		"claude-dev",
+		"scope-1",
+		first,
+	)
+	if len(opts.ExtraArgs) != 2 || opts.ExtraArgs[0] != "--settings" {
+		t.Fatalf("Claude settings args = %#v", opts.ExtraArgs)
+	}
+	if opts.Env[ask.EnvAskURL] != "http://127.0.0.1:1234" || opts.Env[ask.EnvAskScope] != "scope-1" {
+		t.Fatalf("Claude hook env = %#v", opts.Env)
 	}
 }
 
