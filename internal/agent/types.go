@@ -2,7 +2,11 @@
 // and translates their streaming output into a unified event stream.
 package agent
 
-import "lark-coding-agent-bridge-go/internal/config"
+import (
+	"context"
+
+	"lark-coding-agent-bridge-go/internal/config"
+)
 
 // EventType classifies an AgentEvent.
 type EventType string
@@ -140,6 +144,78 @@ type Adapter interface {
 	Run(opts RunOptions) (Run, error)
 }
 
+// UsageProvider is implemented by adapters whose native protocol exposes
+// account-level usage. The bridge uses it for the /usage command.
+type UsageProvider interface {
+	ReadUsage(ctx context.Context) (UsageSnapshot, error)
+}
+
+// ModelProvider is implemented by adapters that can discover the models
+// currently available to the authenticated local CLI account.
+type ModelProvider interface {
+	ListModels(ctx context.Context, cwd string) ([]ModelInfo, error)
+}
+
+// ModelInfo is the provider-neutral model picker entry shown by the bridge.
+type ModelInfo struct {
+	ID          string
+	DisplayName string
+	Description string
+	Default     bool
+}
+
+// UsageSnapshot is a provider-neutral account usage view.
+type UsageSnapshot struct {
+	Provider     string
+	Plan         string
+	Limits       []UsageLimit
+	ResetCredits *int64
+	TokenSummary UsageTokenSummary
+	Activity     *UsageActivity
+}
+
+// UsageActivity describes local, provider-reported activity. It complements
+// account quota windows because multi-provider agents such as OpenCode do not
+// have one shared subscription limit.
+type UsageActivity struct {
+	Sessions              int64
+	Messages              int64
+	InputTokens           int64
+	OutputTokens          int64
+	CachedInputTokens     int64
+	CacheWriteTokens      int64
+	ReasoningOutputTokens int64
+	CostUSD               float64
+}
+
+type UsageLimit struct {
+	ID        string
+	Name      string
+	Primary   *UsageWindow
+	Secondary *UsageWindow
+	Credits   *UsageCredits
+}
+
+type UsageWindow struct {
+	UsedPercent       int
+	WindowDurationMin int64
+	ResetsAt          int64
+}
+
+type UsageCredits struct {
+	Balance   string
+	HasCredit bool
+	Unlimited bool
+}
+
+type UsageTokenSummary struct {
+	LifetimeTokens        *int64
+	PeakDailyTokens       *int64
+	CurrentStreakDays     *int64
+	LongestStreakDays     *int64
+	LongestRunningTurnSec *int64
+}
+
 // SessionResetter is implemented by adapters with persistent agent
 // processes (pi RPC, opencode serve): the bridge calls ResetSession when
 // the user runs /new or switches directory, so the next Run starts fresh.
@@ -147,20 +223,36 @@ type SessionResetter interface {
 	ResetSession(scope string)
 }
 
-// NewAdapter builds the adapter for an agent kind.
-func NewAdapter(kind config.AgentKind) Adapter {
+// AccessConfigurer is implemented by persistent adapters whose server must be
+// started with the profile access policy before the first Run.
+type AccessConfigurer interface {
+	SetDefaultAccess(access config.AccessLevel)
+}
+
+// NewAdapter builds the adapter for an agent kind. runtime is optional to
+// preserve the direct-construction/test API; the bridge passes the profile's
+// per-machine launch configuration.
+func NewAdapter(kind config.AgentKind, runtimes ...config.AgentRuntime) Adapter {
+	var runtime config.AgentRuntime
+	if len(runtimes) > 0 {
+		runtime = runtimes[0]
+	}
 	switch kind {
 	case config.AgentCodex:
-		return &CodexAdapter{binary: "codex"}
+		return &CodexAdapter{binary: "codex", runtime: runtime}
 	case config.AgentPi:
-		return NewPiAdapter("pi")
+		a := NewPiAdapter("pi")
+		a.runtime = runtime
+		return a
 	case config.AgentOpenCode:
-		return NewOpenCodeAdapter("opencode")
+		a := NewOpenCodeAdapter("opencode")
+		a.runtime = runtime
+		return a
 	case config.AgentGrok:
-		return &GrokAdapter{binary: "grok"}
+		return &GrokAdapter{binary: "grok", runtime: runtime}
 	case config.AgentKimi:
-		return &KimiAdapter{binary: "kimi"}
+		return &KimiAdapter{binary: "kimi", runtime: runtime}
 	default:
-		return &ClaudeAdapter{binary: "claude"}
+		return &ClaudeAdapter{binary: "claude", runtime: runtime}
 	}
 }

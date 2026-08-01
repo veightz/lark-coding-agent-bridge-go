@@ -17,6 +17,11 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 			"default": {
 				AgentKind: AgentClaude,
 				App:       AppConfig{AppID: "cli_x", AppSecret: "sec", Tenant: TenantFeishu},
+				Agent: &AgentRuntime{
+					CommandPrefix: "source ~/.proxy-env && proxy_on",
+					Shell:         "/bin/zsh",
+					ShellArgs:     []string{"-ic"},
+				},
 			},
 		},
 	}
@@ -44,6 +49,18 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	}
 	if profile.BaseURL() != "https://open.feishu.cn" {
 		t.Errorf("base url = %v", profile.BaseURL())
+	}
+	runtime := profile.AgentRuntimeConfig()
+	if runtime.CommandPrefix != "source ~/.proxy-env && proxy_on" ||
+		runtime.Shell != "/bin/zsh" ||
+		len(runtime.ShellArgs) != 1 || runtime.ShellArgs[0] != "-ic" {
+		t.Errorf("agent runtime = %+v", runtime)
+	}
+}
+
+func TestAgentRuntimeConfigDefaultsEmpty(t *testing.T) {
+	if got := (&Profile{}).AgentRuntimeConfig(); got.CommandPrefix != "" || got.Shell != "" || got.ShellArgs != nil {
+		t.Fatalf("runtime = %+v", got)
 	}
 }
 

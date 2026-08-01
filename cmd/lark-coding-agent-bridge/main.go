@@ -123,6 +123,11 @@ func run(profileName, agentKind, workspace, appID string) error {
 	if !config.ValidProfileName(profileName) {
 		return fmt.Errorf("非法 profile 名: %q", profileName)
 	}
+	profileLock, err := registry.AcquireProfileLock(paths, profileName)
+	if err != nil {
+		return err
+	}
+	defer profileLock.Release()
 
 	cfg, profile, err := loadOrOnboard(paths, profileName, agentKind, workspace, appID)
 	if err != nil {
@@ -138,7 +143,7 @@ func run(profileName, agentKind, workspace, appID string) error {
 		return fmt.Errorf("获取 bot 身份失败（检查 App ID/Secret 与网络）: %w", err)
 	}
 
-	adapter := agent.NewAdapter(profile.AgentKind)
+	adapter := agent.NewAdapter(profile.AgentKind, profile.AgentRuntimeConfig())
 	adapter.SetBotIdentity(agent.BotIdentity{OpenID: bot.OpenID, Name: bot.AppName})
 	injectAgentEnv(adapter, paths, profileName)
 

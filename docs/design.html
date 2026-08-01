@@ -87,7 +87,7 @@
   <li><b>流式卡片</b>：CardKit 2.0，400ms 节流全卡更新，飞书客户端呈现打字机效果。</li>
   <li><b>模型反问卡片</b>（ADR-0008 / ADR-0014）：Claude <code>AskUserQuestion</code> / Codex <code>requestUserInput</code> / OpenCode <code>question</code> / Pi <code>extension_ui_request</code> 在飞书弹出交互卡片，用户点选（支持的单题也可文字 freeform）后回填 agent；pending ask 期间暂停 idle 看门狗。</li>
   <li><b>Codex 工具权限</b>（ADR-0014）：<code>workspace</code>/<code>read-only</code> 时 app-server 的命令执行、文件修改与额外权限请求 → 飞书卡 → 原 JSON-RPC request id 回填；<code>full</code> 保持无审批。</li>
-  <li><b>OpenCode 工具权限</b>（ADR-0011）：默认 <code>full</code> 自动 <code>always</code> 放行；<code>workspace</code>/<code>read-only</code> 时 SSE <code>permission.asked</code> → 飞书卡 → <code>POST /permission/{id}/reply</code>。</li>
+  <li><b>OpenCode 工具权限</b>（ADR-0011 / ADR-0018）：server 启动时注入 profile 权限规则；<code>full</code> 全允许，<code>workspace</code> 允许工作区编辑且 shell/网络询问，<code>read-only</code> 拒绝 edit/bash，产生的 ask 事件经飞书卡回填 <code>POST /permission/{id}/reply</code>。这是工具权限约束，不宣称等同于 Codex OS sandbox。</li>
   <li><b>聊天访问白名单</b>（ADR-0013）：默认仅应用 owner；<code>/invite user|admin|group</code> 管理名单；陌生人静默丢弃。</li>
   <li><b>三层健壮性</b>：SDK 重连 + supervisor 半死连接检测 + run 级 idle 看门狗；opencode 另加 SSE 帧看门狗（75s 无帧强制重连）与 3s 轮询回补（以服务端消息列表对账，丢帧文本自动补回）。</li>
   <li><b>运维闭环</b>：进程注册表 + dashboard + 自升级。</li>
@@ -192,7 +192,7 @@
 
 <ul>
   <li><b>事件入口</b>：<code>internal/lark</code> 基于官方 oapi-sdk-go v3 的 WS 长连接接收消息事件；REST 用于发消息、下载附件；cardkit 用于流式卡片。</li>
-  <li><b>消息中枢</b>：<code>internal/bridge</code> 负责消息归一化、600ms 防抖合并（连续多条消息合并为一次运行）、斜杠命令分流；会话按 <b>scope</b>（<code>chat</code> 或 <code>chat:thread</code>）隔离。</li>
+  <li><b>消息中枢</b>：<code>internal/bridge</code> 负责消息归一化、600ms 防抖合并（连续多条消息合并为一次运行）、斜杠命令分流；<code>/model</code> 通过可选的 <code>ModelProvider</code> 按当前工作目录读取模型并用一次性 CardKit 卡片切换当前 scope，<code>/usage</code> 通过 <code>UsageProvider</code> 读取 Codex 账户额度或 OpenCode 本地活动统计。会话按 <b>scope</b>（<code>chat</code> 或 <code>chat:thread</code>）隔离。</li>
   <li><b>运行编排</b>：一次运行 = 下载附件 → 构造 prompt → 调 agent 适配器 → 事件流经 <code>card.Reduce</code> 状态机 → 渲染 → 节流推卡 → 会话持久化。</li>
   <li><b>监督</b>：<code>internal/supervisor</code> 独立于 SDK 重连，做 REST 存活探测并强制重建半死连接。</li>
 </ul>
@@ -295,6 +295,16 @@
   <tr><td>中断方式</td><td>SIGTERM → 5s → SIGKILL</td><td><code>turn/interrupt</code> → grace → SIGTERM/SIGKILL</td><td><code>abort</code> 命令</td><td><code>POST /session/{id}/abort</code></td></tr>
   <tr><td>会话保持</td><td><code>--resume &lt;sessionId&gt;</code></td><td><code>thread/resume(threadId)</code></td><td>进程内会话 + <code>--session-id</code></td><td>磁盘持久化，sessionID 续聊</td></tr>
 </table>
+<p>各 profile 可配置本机专用的 <code>agent.commandPrefix</code>、<code>shell</code> 与
+<code>shellArgs</code>（ADR-0015）。未配置时直接启动 CLI；配置后由短生命周期 shell
+先执行前置命令，成功后以 <code>exec "$@"</code> 替换为原 agent 进程。binary 与 argv
+通过位置参数传入，不经过 shell 拼接；因此代理环境只影响 agent 子进程及其后代。</p>
+<p>Codex 与 OpenCode adapter 都实现 <code>ModelProvider</code>：Codex 通过 app-server
+<code>model/list</code> 获取当前账号可见模型，OpenCode 通过目录级
+<code>/config/providers</code> 获取当前项目可用模型。Bridge 的 <code>/model</code> 卡片以
+15 分钟一次性 nonce 约束回调选项，选择结果写入当前 scope 的
+<code>Session.Model</code>（ADR-0016/0018）。两者也实现 <code>UsageProvider</code>：
+Codex 返回额度窗口，OpenCode 返回本地 session/token/cache/cost 聚合。</p>
 
 <h3>3.2 claude 协议时序（spawn-per-message）</h3>
 <div class="fig">
@@ -782,7 +792,7 @@
 </div>
 
 <h2 id="s7"><span class="no">7</span>Dashboard 与进程注册表</h2>
-<p>多个 bridge 实例（不同 profile）可能同时跑在一台机器上。每个进程启动时向注册表登记自己，dashboard 子命令读取注册表汇总成表格。</p>
+<p>多个 bridge 实例（不同 profile）可能同时跑在一台机器上；同一 profile 通过 <code>profiles/&lt;profile&gt;/bridge.lock</code> 的 OS 排他锁限制为单实例，避免消息与卡片回调被不同进程消费。每个进程启动时向注册表登记自己，dashboard 子命令读取注册表汇总成表格。</p>
 
 <div class="fig">
 <svg viewBox="0 0 960 470" width="900" role="img" aria-label="Dashboard 数据流图">

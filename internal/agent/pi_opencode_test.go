@@ -83,6 +83,72 @@ func TestTranslateOpenCodeQuestionAsked(t *testing.T) {
 	}
 }
 
+func TestTranslateOpenCodeQuestionCustomFreeform(t *testing.T) {
+	s := &ocServer{}
+	events, terminal := s.translate(ocEventEnvelope{
+		Type: "question.asked",
+		Properties: map[string]any{
+			"id":        "que_custom",
+			"sessionID": "ses_1",
+			"questions": []any{map[string]any{
+				"header":   "部署方式",
+				"question": "请选择或直接说明",
+				"custom":   true,
+				"options": []any{map[string]any{
+					"label":       "灰度",
+					"description": "先部署少量实例",
+				}},
+			}},
+		},
+	})
+	if terminal || len(events) != 1 || !events[0].Freeform {
+		t.Fatalf("events=%+v terminal=%v", events, terminal)
+	}
+	prompt := events[0].Questions[0].Prompt
+	if !strings.Contains(prompt, "部署方式") || !strings.Contains(prompt, "先部署少量实例") {
+		t.Fatalf("prompt=%q", prompt)
+	}
+}
+
+func TestOpenCodePermissionPolicy(t *testing.T) {
+	workspace := openCodePermissionPolicy(config.AccessWorkspace).(map[string]any)
+	if workspace["edit"] != "allow" || workspace["bash"] != "ask" || workspace["external_directory"] != "deny" {
+		t.Fatalf("workspace policy=%v", workspace)
+	}
+	readOnly := openCodePermissionPolicy(config.AccessReadOnly).(map[string]any)
+	if readOnly["edit"] != "deny" || readOnly["bash"] != "deny" {
+		t.Fatalf("read-only policy=%v", readOnly)
+	}
+	if full := openCodePermissionPolicy(config.AccessFull); full != "allow" {
+		t.Fatalf("full policy=%v", full)
+	}
+
+	env, err := openCodeServerEnv(map[string]string{
+		"OPENCODE_CONFIG_CONTENT": `{"model":"deepseek/x","permission":{"edit":"ask"}}`,
+	}, config.AccessReadOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var merged map[string]any
+	if err := json.Unmarshal([]byte(env["OPENCODE_CONFIG_CONTENT"]), &merged); err != nil {
+		t.Fatal(err)
+	}
+	if merged["model"] != "deepseek/x" {
+		t.Fatalf("non-permission config lost: %v", merged)
+	}
+	permission, _ := merged["permission"].(map[string]any)
+	if permission["edit"] != "deny" {
+		t.Fatalf("permission not replaced: %v", permission)
+	}
+}
+
+func TestSplitOpenCodeModelVariant(t *testing.T) {
+	provider, model, variant, ok := splitModel("deepseek/deepseek-v4-pro#max")
+	if !ok || provider != "deepseek" || model != "deepseek-v4-pro" || variant != "max" {
+		t.Fatalf("split = %q %q %q %v", provider, model, variant, ok)
+	}
+}
+
 func TestTranslateOpenCodePermissionAsked(t *testing.T) {
 	s := &ocServer{}
 	events, terminal := s.translate(ocEventEnvelope{

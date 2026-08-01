@@ -191,7 +191,20 @@ type SessionResetter interface {   // 常驻型适配器实现，支持 /new
     ResetSession(scope string) error
 }
 
-func NewAdapter(kind config.AgentKind) Adapter // 按配置构造四种适配器之一</code></pre>
+type ModelProvider interface {     // 可选：动态模型列表
+    ListModels(ctx context.Context, cwd string) ([]ModelInfo, error)
+}
+
+type UsageProvider interface {     // 可选：额度窗口或本地活动统计
+    ReadUsage(ctx context.Context) (UsageSnapshot, error)
+}
+
+type AccessConfigurer interface {  // 常驻 server 启动前固化 profile 权限
+    SetDefaultAccess(access AccessLevel)
+}
+
+func NewAdapter(kind config.AgentKind, runtime ...config.AgentRuntime) Adapter
+// 按配置构造适配器；runtime 携带本机 profile 的启动前置命令</code></pre>
 <ul>
   <li><b>设计要点</b>：四种 agent 的协议差异全部收敛在适配器内部；bridge 与 card 只依赖 <code>Event</code>。事件语义与 ACP 对齐（且为超集），为将来迁移留路。</li>
 </ul>
@@ -213,6 +226,10 @@ func startProc(cmd *exec.Cmd, prompt string, stopGraceMs int, env []string,
 
 func (r *procRun) Stop()                 // SIGTERM → stopGraceMs 宽限 → SIGKILL
 func (r *procRun) WaitExit(timeoutMs int) bool
+
+agentCommand(runtime, binary, args...)
+// commandPrefix 为空：直接 exec binary
+// 非空：shell 执行 prefix，成功后 exec "$@"；binary/argv 通过位置参数传递
 func (r *procRun) onCleanup(fn func())   // 注册收尾（如删临时系统提示文件）
 func mergeEnv(overrides map[string]string) []string // 合并进程环境变量</code></pre>
 
@@ -292,6 +309,7 @@ type ocServer struct {
 func (s *ocServer) ensureServer(ctx) error
 // 已健康则复用；否则 freePort() 选端口 →
 // spawn: opencode serve --port &lt;port&gt; --hostname 127.0.0.1 →
+// OPENCODE_CONFIG_CONTENT 注入 full/workspace/read-only 工具权限策略 →
 // 轮询 GET /global/health（最长 15s）确认就绪
 
 func (s *ocServer) sessionFor(ctx, scope, cwd string) (sessionID string, err error)
@@ -318,7 +336,10 @@ func translate(ocEvent) []Event
 // frameWatchdog(dir)：75s 无帧（含 heartbeat）→ cancel 强制重连
 // pollRun(run)：每 3s GET /session/{id}/message 对账，reconcilePoll 补发丢失文本后再发终态
 // ocRun.Stop() = POST /session/{id}/abort
-// ListSessions(limit)：GET /session，按 time.updated 排序（/sessions 命令）</code></pre>
+// ListModels(ctx,cwd)：GET /config/providers?directory=...（/model）
+// ReadUsage(ctx)：opencode db &lt;聚合 SQL&gt; --format json（/usage）
+// ListSessions(limit)：GET /project → 各 worktree/sandbox GET /session → 去重排序</code></pre>
+<div class="note"><b>权限边界：</b>OpenCode 的 profile access 通过原生工具 permission 规则实现：full 全允许；workspace 允许工作区编辑、shell/网络询问、外部目录拒绝；read-only 拒绝 edit/bash/外部目录。它提供与 Codex 一致的产品选择，但不是 OS 进程级 sandbox。</div>
 <div class="note"><b>选 serve 而非 ACP 的原因（与实现直接相关）：</b>单进程多 session 是一等公民（<code>sessions</code> 映射 + 按工作目录的 SSE 流按 sessionID 扇出）、有 <code>/global/health</code> 做存活探测、事件粒度更细（part 级 delta 与工具全生命周期）。会话由 opencode 磁盘持久化，bridge 重启后凭 sessionID 续聊。</div>
 
 <h3>3.5 acpClient <span class="file">internal/agent/acp.go</span>（保留的迁移路径，当前未接线）</h3>
@@ -348,7 +369,7 @@ func (b *Bridge) HandleMessage(ctx context.Context, msg *Message)
 // 1. 过滤自己（bot）发出的消息，防自循环
 // 2. 快捷回复路由：点击 💬 按钮后用户的下一条私聊 → forwardToGroup 转回原群
 // 3. 群聊门槛：必须 @bot 才受理（单聊直通）
-// 4. 斜杠命令分流：/new /cd /ws /sessions /bind /open /stop /status /help → commands.go
+// 4. 斜杠命令分流：/new /cd /ws /sessions /bind /open /stop /status /model /usage /help → commands.go
 // 5. 普通消息 → 投入该 scope 的 PendingQueue（私聊统一话题回复，不自动建群，ADR-0012）
 
 func (b *Bridge) runBatch(ctx, scope string, msgs []*Message)
@@ -378,9 +399,10 @@ func (b *Bridge) stopRunByCardMessage(msgID)     // 卡片 ⏹ 按钮 callback�
 
 // Claude：run 注入 LARK_BRIDGE_* + --settings；子命令 `hook claude` 读 stdin → POST /v1/ask → stdout directive
 // OpenCode：SSE question.asked → EventAskUser → bridge.handleAskUser → POST /question/{id}/reply
+//   question.custom 单题支持聊天文字 freeform；option.description 合并进卡片文案
 // OpenCode：SSE permission.asked|permission.v2.asked（ADR-0011）
 //   access=full（默认）→ auto POST /permission/{id}/reply {reply:always}
-//   workspace|read-only → EventAskUser 卡片 once|always|reject
+//   workspace 的 ask 事件 → EventAskUser 卡片 once|always|reject；read-only edit/bash 直接 deny
 // Pi：RPC extension_ui_request (select/confirm/input/editor) → EventAskUser → extension_ui_response
 //     input/editor 支持聊天文字 freeform（SubmitComment / tryAnswerAskWithText）
 // Codex（ADR-0014）：app-server requestUserInput / command+file approval /
@@ -430,6 +452,8 @@ func (q *PendingQueue) fire()                // 收拢本批消息 → 触发 ru
   <tr><td><code>/unbind</code></td><td>解除当前聊天的会话绑定</td></tr>
   <tr><td><code>/stop</code></td><td>中断当前 scope 进行中的 run（各 agent 原生中断）</td></tr>
   <tr><td><code>/status</code></td><td>报告 profile、agent、工作目录、会话与运行状态</td></tr>
+  <tr><td><code>/model</code></td><td>通过 adapter 的 <code>ModelProvider</code> 按当前 cwd 动态查询模型，以一次性 CardKit 按钮选择并写入当前 scope 的 <code>Session.Model</code>；Codex 使用 <code>model/list</code>，OpenCode 使用 <code>/config/providers</code></td></tr>
+  <tr><td><code>/usage</code></td><td>通过 adapter 的 <code>UsageProvider</code> 查询用量；Codex 展示 app-server 账户额度，OpenCode 展示本地 session/token/cache/cost 聚合</td></tr>
   <tr><td><code>/help</code></td><td>帮助文本</td></tr>
 </table>
 
@@ -590,7 +614,12 @@ func List(paths config.Paths) ([]Entry, error)
 // 读取全部条目 → Alive() 探测（signal 0）→ 清理僵尸条目后返回
 
 func (e Entry) Alive() bool // kill(pid, 0) 活性探测
-// 内部：registryPath / load / save / upsert（按 PID 覆盖写）</code></pre>
+// 内部：registryPath / load / save / upsert（按 PID 覆盖写）
+
+func AcquireProfileLock(paths config.Paths, profile string) (*ProfileLock, error)
+// run 启动最前面以 LOCK_EX|LOCK_NB 获取 profiles/&lt;profile&gt;/bridge.lock；
+// 同 profile 已运行则返回 ProfileLockedError（含已有 PID），不同 profile 不冲突；
+// 文件描述符持锁到进程退出，崩溃时由 OS 自动释放，锁文件存在不代表被占用。</code></pre>
 
 <h3>6.3 自升级 <span class="file">internal/upgrade/upgrade.go</span></h3>
 <pre><code>func Run(ctx context.Context, opts Options) error

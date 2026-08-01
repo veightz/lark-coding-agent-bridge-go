@@ -71,10 +71,25 @@ type ChatAccess struct {
 	Admins []string `json:"admins,omitempty"`
 }
 
+// AgentRuntime controls how the local agent CLI process is launched.
+// It is intentionally stored in the local profile config so different
+// machines can use different network/bootstrap commands.
+type AgentRuntime struct {
+	// CommandPrefix is evaluated before exec'ing the agent CLI in the same
+	// short-lived shell, for example: "source ~/.proxy-env && proxy_on".
+	CommandPrefix string `json:"commandPrefix,omitempty"`
+	// Shell selects the interpreter for CommandPrefix (default: /bin/sh).
+	Shell string `json:"shell,omitempty"`
+	// ShellArgs selects how the command string is passed (default: ["-c"]).
+	// Use ["-ic"] only when an interactive shell is required for aliases.
+	ShellArgs []string `json:"shellArgs,omitempty"`
+}
+
 // Profile is one bot instance's full configuration.
 type Profile struct {
-	AgentKind AgentKind `json:"agentKind"`
-	App       AppConfig `json:"app"`
+	AgentKind AgentKind     `json:"agentKind"`
+	App       AppConfig     `json:"app"`
+	Agent     *AgentRuntime `json:"agent,omitempty"`
 
 	// Access is chat access control (owner is not listed; resolved at runtime).
 	Access ChatAccess `json:"access,omitempty"`
@@ -109,6 +124,14 @@ func (p *Profile) IdleTimeout() int {
 // AutoReplyEnabled reports whether the bot responds without @-mention.
 func (p *Profile) AutoReplyEnabled() bool {
 	return p.Preferences.AllowAutoReply
+}
+
+// AgentRuntimeConfig returns the optional per-machine launch settings.
+func (p *Profile) AgentRuntimeConfig() AgentRuntime {
+	if p.Agent == nil {
+		return AgentRuntime{}
+	}
+	return *p.Agent
 }
 
 // DefaultAccess returns the effective access level (full when unset).

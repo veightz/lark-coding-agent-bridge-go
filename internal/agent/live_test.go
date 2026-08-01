@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"testing"
 	"time"
@@ -102,6 +103,42 @@ func TestLiveOpenCode(t *testing.T) {
 	}
 }
 
+func TestLiveOpenCodeCapabilities(t *testing.T) {
+	liveEnabled(t)
+	a := NewOpenCodeAdapter("opencode")
+	a.SetDefaultAccess(config.AccessReadOnly)
+	defer func() {
+		a.mu.Lock()
+		srv := a.server
+		a.mu.Unlock()
+		if srv != nil {
+			srv.shutdown()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := a.ListModels(ctx, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, err := a.ReadUsage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := a.ListSessions(20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("models=%d sessions=%d activity=%+v", len(models), len(sessions), usage.Activity)
+	if len(models) == 0 || usage.Activity == nil {
+		t.Fatal("OpenCode capability response is empty")
+	}
+}
+
 func TestLiveCodex(t *testing.T) {
 	liveEnabled(t)
 	a := &CodexAdapter{binary: "codex"}
@@ -129,5 +166,20 @@ func TestLiveCodex(t *testing.T) {
 	}
 	if text == "" {
 		t.Fatal("no text output")
+	}
+}
+
+func TestLiveCodexUsage(t *testing.T) {
+	liveEnabled(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	usage, err := (&CodexAdapter{binary: "codex"}).ReadUsage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan=%q limits=%+v resetCredits=%v tokens=%+v",
+		usage.Plan, usage.Limits, usage.ResetCredits, usage.TokenSummary)
+	if len(usage.Limits) == 0 {
+		t.Fatal("no rate limits returned")
 	}
 }

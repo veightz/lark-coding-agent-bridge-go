@@ -3,13 +3,15 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
-	"os/exec"
+
+	"lark-coding-agent-bridge-go/internal/config"
 )
 
 // GrokAdapter drives the local `grok` CLI (xAI Grok coding agent).
 type GrokAdapter struct {
 	binary      string
 	botIdentity *BotIdentity
+	runtime     config.AgentRuntime
 	Env         map[string]string
 }
 
@@ -39,7 +41,7 @@ func (a *GrokAdapter) Run(opts RunOptions) (Run, error) {
 	if binary == "" {
 		binary = "grok"
 	}
-	cmd := exec.Command(binary, args...)
+	cmd := agentCommand(a.runtime, binary, args...)
 	cmd.Dir = opts.Cwd
 
 	run, err := startProc(cmd, "", opts.StopGraceMs, mergeEnv(mergeEnvMaps(a.Env, opts.Env)), translateGrokLine, func(msg string) Event {

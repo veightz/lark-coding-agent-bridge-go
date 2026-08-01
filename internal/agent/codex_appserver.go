@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"lark-coding-agent-bridge-go/internal/config"
 )
 
 // codexAppRun is one turn over `codex app-server --stdio`. Unlike
@@ -64,13 +66,13 @@ func (e codexRPCError) Error() string {
 	return fmt.Sprintf("Codex app-server RPC %d: %s", e.Code, e.Message)
 }
 
-func startCodexAppServer(binary, prompt string, opts RunOptions, env []string) (Run, error) {
+func startCodexAppServer(binary, prompt string, opts RunOptions, env []string, runtime config.AgentRuntime) (Run, error) {
 	if binary == "" {
 		binary = "codex"
 	}
 	args := []string{"app-server", "--stdio"}
 	args = append(args, opts.ExtraArgs...)
-	cmd := exec.Command(binary, args...)
+	cmd := agentCommand(runtime, binary, args...)
 	cmd.Dir = opts.Cwd
 	cmd.Env = env
 

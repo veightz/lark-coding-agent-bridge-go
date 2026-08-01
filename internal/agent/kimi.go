@@ -3,13 +3,15 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
-	"os/exec"
+
+	"lark-coding-agent-bridge-go/internal/config"
 )
 
 // KimiAdapter drives the local `kimi` CLI (Kimi Code).
 type KimiAdapter struct {
 	binary      string
 	botIdentity *BotIdentity
+	runtime     config.AgentRuntime
 	Env         map[string]string
 }
 
@@ -42,7 +44,7 @@ func (a *KimiAdapter) Run(opts RunOptions) (Run, error) {
 	if binary == "" {
 		binary = "kimi"
 	}
-	cmd := exec.Command(binary, args...)
+	cmd := agentCommand(a.runtime, binary, args...)
 	cmd.Dir = opts.Cwd
 
 	run, err := startProc(cmd, "", opts.StopGraceMs, mergeEnv(mergeEnvMaps(a.Env, opts.Env)), translateKimiLine, func(msg string) Event {

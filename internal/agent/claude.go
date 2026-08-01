@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"lark-coding-agent-bridge-go/internal/config"
@@ -14,6 +13,7 @@ import (
 type ClaudeAdapter struct {
 	binary      string
 	botIdentity *BotIdentity
+	runtime     config.AgentRuntime
 	// Env injected into every child (lark-cli context etc.).
 	Env map[string]string
 }
@@ -66,7 +66,7 @@ func (a *ClaudeAdapter) Run(opts RunOptions) (Run, error) {
 	if binary == "" {
 		binary = "claude"
 	}
-	cmd := exec.Command(binary, args...)
+	cmd := agentCommand(a.runtime, binary, args...)
 	cmd.Dir = opts.Cwd
 
 	run, err := startProc(cmd, opts.Prompt, opts.StopGraceMs, mergeEnv(mergeEnvMaps(a.Env, opts.Env)), translateClaudeLine, func(msg string) Event {

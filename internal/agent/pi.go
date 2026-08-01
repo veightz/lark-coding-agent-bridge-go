@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"lark-coding-agent-bridge-go/internal/config"
 )
 
 // PiAdapter keeps one RPC process per scope (keyed with cwd, so /cd
@@ -26,6 +28,7 @@ import (
 type PiAdapter struct {
 	binary      string
 	botIdentity *BotIdentity
+	runtime     config.AgentRuntime
 	// Env injected into every child (lark-cli context etc.).
 	Env map[string]string
 
@@ -103,7 +106,7 @@ func (a *PiAdapter) spawn(opts RunOptions) (*piSession, error) {
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
 	}
-	cmd := exec.Command(a.binary, args...)
+	cmd := agentCommand(a.runtime, a.binary, args...)
 	cmd.Dir = opts.Cwd
 	cmd.Env = mergeEnv(a.Env)
 

@@ -10,7 +10,7 @@
 
 - **[deepcoldy/botmux](https://github.com/deepcoldy/botmux)**（**首选对照**）：飞书遥控 AI 编程 CLI 的成熟实现。本仓库在以下能力上重点对齐其设计与语义，而非照搬进程模型：
   - **模型反问接管**：Claude `AskUserQuestion` / OpenCode `question` / Pi `extension_ui_request` → 飞书交互卡片 → 用户点选（或文字 freeform）后回填 agent（见 ADR-0008、`internal/ask`，对照 botmux `ask-broker` / `ask-card` / hook-installer）。
-  - **OpenCode 工具权限**（ADR-0011）：`defaultAccess=full`（默认）时 auto-reply `always`；`workspace`/`read-only` 时弹飞书卡（允许一次 / 始终允许 / 拒绝）→ `POST /permission/{id}/reply`。
+  - **OpenCode 工具权限**（ADR-0011/0018）：profile access 在 server 启动时注入原生 permission 规则；需要确认的请求走飞书卡（允许一次 / 始终允许 / 拒绝）→ `POST /permission/{id}/reply`。
   - 卡片回调、超时 settle、daemon 不可达时 passthrough 降级等产品细节。
   - 文档入口：botmux README、`docs/TEST-GUIDE-ask-hooks.md`、源码 `src/core/ask-*.ts`、`src/im/lark/ask-card.ts`。
 - [lark-channel-bridge](https://github.com/zarazhangrui/lark-coding-agent-bridge)：原版 TS 桥接器（多 profile、流式卡片、命令体系的起点）。
@@ -75,6 +75,6 @@ docs/
 
 后台服务管理、云文档评论、COT 消息、/resume、/config 卡片、secrets 加密、`/invite all group` 批量列举；
 Pi 的 notify/setStatus 等 fire-and-forget UI 不弹卡；Claude 工具级权限仍走 access mode（不做飞书审批卡）；
-Codex 反问与权限确认已通过 app-server 接管（ADR-0014）；OpenCode 工具权限已接管（ADR-0011）。
+Codex 反问与权限确认已通过 app-server 接管（ADR-0014）；OpenCode 工具权限、自由文本反问、模型/用量和跨项目会话已接管（ADR-0011/0018）。
 访问控制（owner + `/invite`/`/remove` 白名单）见 ADR-0013。
 详见 `docs/adr/` 与 README「与原版的差异」。

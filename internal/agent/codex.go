@@ -11,6 +11,7 @@ import (
 type CodexAdapter struct {
 	binary      string
 	botIdentity *BotIdentity
+	runtime     config.AgentRuntime
 	// Env injected into every child (lark-cli context etc.).
 	Env map[string]string
 }
@@ -36,7 +37,7 @@ func (a *CodexAdapter) Run(opts RunOptions) (Run, error) {
 		return nil, fmt.Errorf("cwd is required for CodexAdapter.Run")
 	}
 	prompt := PrefixSystemPrompt(opts.Prompt, a.botIdentity)
-	return startCodexAppServer(a.binary, prompt, opts, mergeEnv(mergeEnvMaps(a.Env, opts.Env)))
+	return startCodexAppServer(a.binary, prompt, opts, mergeEnv(mergeEnvMaps(a.Env, opts.Env)), a.runtime)
 }
 
 // codexTranslator converts codex exec --json JSONL into AgentEvents.

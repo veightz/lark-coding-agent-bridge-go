@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"lark-coding-agent-bridge-go/internal/config"
 )
 
 // procRun is the shared Run implementation over an exec.Cmd child process.
@@ -178,4 +181,37 @@ func mergeEnvMaps(base, overlay map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// agentCommand builds a direct exec.Cmd unless a per-machine command prefix
+// is configured. Prefix mode runs a short-lived shell which performs the
+// bootstrap and then replaces itself with the original CLI process. The
+// binary and argv are positional parameters, never shell-concatenated.
+func agentCommand(runtime config.AgentRuntime, binary string, args ...string) *exec.Cmd {
+	return agentCommandContext(nil, runtime, binary, args...)
+}
+
+func agentCommandContext(ctx context.Context, runtime config.AgentRuntime, binary string, args ...string) *exec.Cmd {
+	if runtime.CommandPrefix == "" {
+		if ctx != nil {
+			return exec.CommandContext(ctx, binary, args...)
+		}
+		return exec.Command(binary, args...)
+	}
+
+	shell := runtime.Shell
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	shellArgs := append([]string(nil), runtime.ShellArgs...)
+	if len(shellArgs) == 0 {
+		shellArgs = []string{"-c"}
+	}
+	script := "eval \"$1\"\nlark_agent_prefix_status=$?\n[ \"$lark_agent_prefix_status\" -eq 0 ] || exit \"$lark_agent_prefix_status\"\nshift\nexec \"$@\""
+	shellArgs = append(shellArgs, script, "lark-agent-wrapper", runtime.CommandPrefix, binary)
+	shellArgs = append(shellArgs, args...)
+	if ctx != nil {
+		return exec.CommandContext(ctx, shell, shellArgs...)
+	}
+	return exec.Command(shell, shellArgs...)
 }

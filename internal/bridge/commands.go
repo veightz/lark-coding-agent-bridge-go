@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,8 @@ const helpText = `**可用命令**
 - /unbind — 解除当前聊天的会话绑定
 - /stop — 停止当前运行
 - /status — 查看 profile、agent、工作目录和会话状态
+- /model — 用交互卡片切换当前会话模型
+- /usage — 查看账户额度或本地使用统计
 - /invite user @某人 — 允许对方私聊 bot（owner/admin）
 - /invite admin @某人 — 添加管理员（owner/admin）
 - /invite group — 开放当前群给群内所有人（owner/admin）
@@ -112,6 +115,12 @@ func (b *Bridge) handleCommand(msg *Message, content string) {
 	case "/status":
 		reply(b.statusText(scope))
 
+	case "/model":
+		b.handleModel(msg, reply)
+
+	case "/usage":
+		b.handleUsage(reply)
+
 	case "/invite":
 		b.handleInvite(msg, args, reply)
 
@@ -124,6 +133,124 @@ func (b *Bridge) handleCommand(msg *Message, content string) {
 	default:
 		reply("未知命令 " + cmd + "，发 /help 查看可用命令")
 	}
+}
+
+func (b *Bridge) handleUsage(reply func(string)) {
+	provider, ok := b.Agent.(agent.UsageProvider)
+	if !ok {
+		reply("当前 agent（" + b.Agent.DisplayName() + "）暂不支持 /usage。")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	usage, err := provider.ReadUsage(ctx)
+	if err != nil {
+		reply("⚠️ 查询用量失败：" + err.Error())
+		return
+	}
+	reply(formatUsage(usage, time.Now()))
+}
+
+func formatUsage(usage agent.UsageSnapshot, now time.Time) string {
+	var sb strings.Builder
+	sb.WriteString("**用量统计**\n")
+	if usage.Provider != "" {
+		sb.WriteString("- 来源：" + usage.Provider + "\n")
+	}
+	if usage.Plan != "" {
+		sb.WriteString("- 套餐：`" + usage.Plan + "`\n")
+	}
+	for _, limit := range usage.Limits {
+		name := limit.Name
+		if name == "" {
+			name = limit.ID
+		}
+		if name == "" {
+			name = "Codex"
+		}
+		sb.WriteString("- **" + name + "**\n")
+		if limit.Primary != nil {
+			sb.WriteString("  - " + formatUsageWindow(limit.Primary, now) + "\n")
+		}
+		if limit.Secondary != nil {
+			sb.WriteString("  - " + formatUsageWindow(limit.Secondary, now) + "\n")
+		}
+		if limit.Credits != nil {
+			switch {
+			case limit.Credits.Unlimited:
+				sb.WriteString("  - credits：无限\n")
+			case limit.Credits.Balance != "":
+				sb.WriteString("  - credits：`" + limit.Credits.Balance + "`\n")
+			}
+		}
+	}
+	if usage.ResetCredits != nil {
+		sb.WriteString("- 可用额度重置次数：" + strconv.FormatInt(*usage.ResetCredits, 10) + "\n")
+	}
+	if usage.TokenSummary.LifetimeTokens != nil {
+		sb.WriteString("- 累计 tokens：" + formatInteger(*usage.TokenSummary.LifetimeTokens) + "\n")
+	}
+	if usage.TokenSummary.PeakDailyTokens != nil {
+		sb.WriteString("- 单日峰值 tokens：" + formatInteger(*usage.TokenSummary.PeakDailyTokens) + "\n")
+	}
+	if activity := usage.Activity; activity != nil {
+		sb.WriteString("- 会话数：" + formatInteger(activity.Sessions) + "\n")
+		sb.WriteString("- 消息数：" + formatInteger(activity.Messages) + "\n")
+		sb.WriteString("- 输入 tokens：" + formatInteger(activity.InputTokens) + "\n")
+		sb.WriteString("- 输出 tokens：" + formatInteger(activity.OutputTokens) + "\n")
+		if activity.CachedInputTokens > 0 {
+			sb.WriteString("- cache read：" + formatInteger(activity.CachedInputTokens) + "\n")
+		}
+		if activity.CacheWriteTokens > 0 {
+			sb.WriteString("- cache write：" + formatInteger(activity.CacheWriteTokens) + "\n")
+		}
+		if activity.ReasoningOutputTokens > 0 {
+			sb.WriteString("- reasoning tokens：" + formatInteger(activity.ReasoningOutputTokens) + "\n")
+		}
+		if activity.CostUSD > 0 {
+			sb.WriteString(fmt.Sprintf("- 原生成本：`$%.4f`\n", activity.CostUSD))
+		}
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+func formatUsageWindow(window *agent.UsageWindow, now time.Time) string {
+	label := formatWindowDuration(window.WindowDurationMin)
+	remaining := 100 - window.UsedPercent
+	if remaining < 0 {
+		remaining = 0
+	}
+	text := fmt.Sprintf("%s：已用 %d%%，剩余 %d%%", label, window.UsedPercent, remaining)
+	if window.ResetsAt > 0 {
+		reset := time.Unix(window.ResetsAt, 0).In(now.Location())
+		text += "；" + reset.Format("01-02 15:04") + " 重置"
+	}
+	return text
+}
+
+func formatWindowDuration(minutes int64) string {
+	switch {
+	case minutes > 0 && minutes%(24*60) == 0:
+		return strconv.FormatInt(minutes/(24*60), 10) + " 天窗口"
+	case minutes > 0 && minutes%60 == 0:
+		return strconv.FormatInt(minutes/60, 10) + " 小时窗口"
+	case minutes > 0:
+		return strconv.FormatInt(minutes, 10) + " 分钟窗口"
+	default:
+		return "用量窗口"
+	}
+}
+
+func formatInteger(value int64) string {
+	raw := strconv.FormatInt(value, 10)
+	start := 0
+	if strings.HasPrefix(raw, "-") {
+		start = 1
+	}
+	for i := len(raw) - 3; i > start; i -= 3 {
+		raw = raw[:i] + "," + raw[i:]
+	}
+	return raw
 }
 
 func (b *Bridge) handleWsCommand(msg *Message, args []string, reply func(string)) {
@@ -218,12 +345,19 @@ func (b *Bridge) statusText(scope string) string {
 	}
 	sb.WriteString("- 工作目录: `" + b.Workspaces.Get() + "`\n")
 	sb.WriteString("- scope: `" + scope + "`\n")
-	if sess, ok := b.Sessions.Get(scope); ok && (sess.SessionID != "" || sess.ThreadID != "") {
+	if sess, ok := b.Sessions.Get(scope); ok && (sess.SessionID != "" || sess.ThreadID != "" || sess.Model != "") {
 		id := sess.SessionID
 		if id == "" {
 			id = sess.ThreadID
 		}
-		sb.WriteString("- 会话: `" + id + "`\n")
+		if id != "" {
+			sb.WriteString("- 会话: `" + id + "`\n")
+		} else {
+			sb.WriteString("- 会话: （尚未开始）\n")
+		}
+		if sess.Model != "" {
+			sb.WriteString("- 模型: `" + sess.Model + "`\n")
+		}
 	} else {
 		// 私聊主时间线每条消息是新话题/新会话；话题内才会续聊。
 		sb.WriteString("- 会话: （无；私聊主时间线下一条新建，话题内续聊）\n")
@@ -487,7 +621,7 @@ type CardActionResult struct {
 	Card      map[string]any // optional full card replace (ask settle / toggle)
 }
 
-// HandleCardAction processes card button callbacks (⏹ stop / 🔄 refresh / ask_*).
+// HandleCardAction processes card button callbacks (stop / refresh / model / ask).
 func (b *Bridge) HandleCardAction(chatID, messageID, operatorID string, value map[string]any) CardActionResult {
 	if !b.checkOperatorAccess(chatID, operatorID) {
 		return CardActionResult{ToastKind: "error", Toast: "无权限操作"}
@@ -501,6 +635,8 @@ func (b *Bridge) HandleCardAction(chatID, messageID, operatorID string, value ma
 		return CardActionResult{ToastKind: "info", Toast: "该任务已结束（bridge 重启或卡片已过期），请发新消息重新开始"}
 	case "refresh":
 		return CardActionResult{ToastKind: "info", Toast: b.handleRefresh(chatID, messageID)}
+	case modelSelectAction:
+		return b.handleModelSelect(chatID, value)
 	case ask.ActionSelect, ask.ActionToggle, ask.ActionSubmit:
 		kind, toast, card := b.HandleAskCardAction(operatorID, value)
 		return CardActionResult{ToastKind: kind, Toast: toast, Card: card}
@@ -593,6 +729,7 @@ func (b *Bridge) forwardToGroup(groupChatID, cardMessageID, userOpenID, text str
 		Scope:     scope,
 		Prompt:    text,
 		Cwd:       cwd,
+		Model:     sess.Model,
 		Access:    b.Profile.DefaultAccess(),
 		SessionID: sess.SessionID,
 		ThreadID:  sess.ThreadID,
@@ -666,6 +803,9 @@ func (b *Bridge) forwardToGroup(groupChatID, cardMessageID, userOpenID, text str
 	stream.Update(card.Render(runState, card.RenderOptions{GroupChat: true}))
 	stream.Finish(runState.TextContent())
 
+	if latest, ok := b.Sessions.Get(scope); ok && latest.Model != sess.Model {
+		newSess.Model = latest.Model
+	}
 	if newSess.SessionID != "" || newSess.ThreadID != "" {
 		b.Sessions.Set(scope, newSess)
 		b.recordGroupBinding(scope, groupChatID, "group", newSess)

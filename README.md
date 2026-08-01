@@ -31,8 +31,9 @@
 - **三层健壮性**：SDK 自动重连 + supervisor 存活探测强制重建（半死连接自愈）+ run 级 idle 看门狗（默认 10 分钟无事件自动终止并标注卡片）。
 - **多工作区**：`/cd` 切换目录，`/ws` 保存 / 复用命名工作区。
 - **图片和文件**：直接发给 bot，自动下载本地并附上路径（pi 走 base64 内嵌，opencode 走 file part）。
-- **模型反问卡片**（ADR-0008）：Claude `AskUserQuestion` / OpenCode `question` / Pi `extension_ui_request` 在飞书弹出交互卡片，点选（或文字 freeform）后 agent 继续（对标 botmux ask 链路）。
-- **OpenCode 权限**（ADR-0011）：默认 `full` 自动 `always` 放行；`workspace`/`read-only` 时 `permission.asked` 弹「允许一次 / 始终允许 / 拒绝」卡。
+- **模型反问卡片**（ADR-0008/0018）：Claude `AskUserQuestion` / OpenCode `question` / Pi `extension_ui_request` 在飞书弹出交互卡片，点选或直接回复文字后 agent 继续。
+- **Codex / OpenCode 权限接管**（ADR-0011/0014/0018）：`full` 默认放行；受限模式按各 agent 原生协议执行权限策略并在需要时弹飞书确认卡。OpenCode `read-only` 会拒绝 edit/bash，`workspace` 的 bash 与网络请求需确认。
+- **模型与用量**（ADR-0016/0018）：Codex、OpenCode 均支持 `/model`；`/usage` 分别展示 Codex 账户额度或 OpenCode 本地 session/token/cache/cost 统计。
 - **扫码向导**：首次运行终端渲染二维码创建 / 绑定 PersonalAgent 应用（复刻 registerApp 协议），也支持 `--app-id`。
 - **多 profile**：独立凭证、会话、工作区与媒体缓存（`--profile` 必填）。
 - **dashboard**：查看本机所有运行中的 bridge 实例及版本（区分发布版 / 开发分支构建）。
@@ -69,6 +70,8 @@ go build -o bin/lark-coding-agent-bridge ./cmd/lark-coding-agent-bridge
 
 常用参数：`--profile <name>`、`--agent claude|codex|pi|opencode`、`--workspace <path>`、`--app-id <id>`。
 
+不同 profile 可以同时运行；同一 profile 由进程锁限制为单实例。重复启动会立即退出并提示当前占用该 profile 的 PID。
+
 ## 聊天内命令
 
 | 命令 | 作用 |
@@ -82,6 +85,8 @@ go build -o bin/lark-coding-agent-bridge ./cmd/lark-coding-agent-bridge
 | `/unbind` | 解除当前聊天的会话绑定 |
 | `/stop` | 停止当前运行（同卡片上的 ⏹ 按钮） |
 | `/status` | 查看 profile、agent、工作目录、会话状态 |
+| `/model` | 用交互卡片切换当前会话模型（Codex / OpenCode） |
+| `/usage` | 查看账户额度或本地使用统计（Codex / OpenCode） |
 | `/help` | 帮助 |
 
 私聊无需 @；群聊需要 `@bot`。
@@ -92,6 +97,7 @@ go build -o bin/lark-coding-agent-bridge ./cmd/lark-coding-agent-bridge
 | --- | --- |
 | `~/.lark-coding-agent-bridge/config.json` | 根配置（profiles） |
 | `~/.lark-coding-agent-bridge/registry/processes.json` | 进程注册表（dashboard） |
+| `~/.lark-coding-agent-bridge/profiles/<name>/bridge.lock` | 同 profile 单实例进程锁（ADR-0017） |
 | `~/.lark-coding-agent-bridge/profiles/<name>/sessions.json` | 会话状态 |
 | `~/.lark-coding-agent-bridge/profiles/<name>/bindings.json` | 会话↔聊天绑定表（ADR-0005/0007；群跑完自动写入） |
 | `~/.lark-coding-agent-bridge/profiles/<name>/workspaces.json` | 工作区绑定 |
@@ -99,6 +105,75 @@ go build -o bin/lark-coding-agent-bridge ./cmd/lark-coding-agent-bridge
 | `~/.lark-coding-agent-bridge/workspaces/<name>/default/` | 默认工作目录 |
 
 设置 `LARK_CODING_BRIDGE_HOME=/path/to/state` 可迁移全部本地状态。
+
+## Agent 启动前置命令（按机器配置）
+
+无法直连外网的机器，可以为每个本机 profile 单独配置 agent CLI 的启动前置命令。
+它只在 Bridge 启动 agent 的子 shell 中生效，不会修改 Bridge 主进程、当前终端或全局
+代理环境。未配置时仍直接启动 CLI。
+
+配置文件默认是 `~/.lark-coding-agent-bridge/config.json`；如果设置过
+`LARK_CODING_BRIDGE_HOME`，则是 `$LARK_CODING_BRIDGE_HOME/config.json`。找到启动
+Bridge 时 `--profile <name>` 对应的 `profiles.<name>`，在其中加入 `agent` 字段。
+
+### 使用脚本、function 或普通命令
+
+推荐把代理初始化写在可执行脚本中，或者在 `commandPrefix` 里显式 `source` 所需文件：
+
+```json
+{
+  "profiles": {
+    "my-codex": {
+      "agentKind": "codex",
+      "agent": {
+        "commandPrefix": "source ~/.proxy-env && proxy_on",
+        "shell": "/bin/zsh"
+      }
+    }
+  }
+}
+```
+
+也可以直接导出仅供 agent 使用的代理变量：
+
+```json
+"agent": {
+  "commandPrefix": "export HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890"
+}
+```
+
+### 使用 shell alias
+
+默认 shell 是 `/bin/sh`，默认参数是 `["-c"]`，不会自动加载 `.zshrc` 或 `.bashrc`。
+如果 `proxy_on` 只是 `.zshrc` 中定义的 alias，需要显式选择 zsh 交互模式：
+
+```json
+"agent": {
+  "commandPrefix": "proxy_on",
+  "shell": "/bin/zsh",
+  "shellArgs": ["-ic"]
+}
+```
+
+修改配置后重启对应 Bridge 进程即可生效。
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `agent.commandPrefix` | 空 | 启动 agent 前执行的 shell 命令；为空时不启动 shell |
+| `agent.shell` | `/bin/sh` | 执行前置命令的 shell |
+| `agent.shellArgs` | `["-c"]` | shell 参数；alias 场景可使用 `["-ic"]` |
+
+注意事项：
+
+- 前置命令返回非零时 agent 不会启动。
+- 前置命令成功后，shell 会用 `exec` 替换为真实 agent CLI。
+- agent binary 和参数通过位置参数传递，不会被 shell 二次解析。
+- 配置作用于该 profile 所选 agent 的所有启动路径；Codex/OpenCode 包括正常对话、`/model` 和 `/usage`。
+- 该设置同样支持 Claude、Pi、OpenCode、Grok 和 Kimi。
+- 交互式 shell 会加载用户配置，可能产生额外输出或副作用，因此优先使用可执行 wrapper
+  或显式 `source`。
+- 它不会为 Bridge 自身连接飞书提供代理；如果飞书连接也需要代理，应单独设置 Bridge
+  进程环境。
 
 ## 聊天访问控制（ADR-0013）
 
@@ -115,7 +190,7 @@ go build -o bin/lark-coding-agent-bridge ./cmd/lark-coding-agent-bridge
 
 ## 权限模式与看门狗
 
-profile 配置中的 `permissions.defaultAccess` 控制 agent 工具权限（`full` 默认 / `workspace` / `read-only`）；`preferences.idleTimeoutMinutes` 控制 run 级 idle 看门狗（默认 10，负值关闭）。
+profile 配置中的 `permissions.defaultAccess` 控制 agent 工具权限（`full` 默认 / `workspace` / `read-only`）；`preferences.idleTimeoutMinutes` 控制 run 级 idle 看门狗（默认 10，负值关闭）。OpenCode 使用工具权限规则实现等价产品语义，不等同于 Codex 的进程级 OS sandbox。
 
 ## 开发
 

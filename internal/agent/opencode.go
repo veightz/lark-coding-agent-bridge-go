@@ -18,6 +18,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -30,8 +31,10 @@ import (
 // OpenCodeAdapter manages one opencode serve process and routes its
 // global SSE event bus to per-run channels.
 type OpenCodeAdapter struct {
-	binary      string
-	botIdentity *BotIdentity
+	binary        string
+	botIdentity   *BotIdentity
+	runtime       config.AgentRuntime
+	defaultAccess config.AccessLevel
 	// Env injected into the server child (lark-cli context etc.).
 	Env map[string]string
 
@@ -54,6 +57,14 @@ func (a *OpenCodeAdapter) DisplayName() string { return "OpenCode" }
 
 func (a *OpenCodeAdapter) SetBotIdentity(id BotIdentity) { a.botIdentity = &id }
 
+// SetDefaultAccess fixes the permission policy used by the persistent server.
+// Bridge calls this before the first command or run for the profile.
+func (a *OpenCodeAdapter) SetDefaultAccess(access config.AccessLevel) {
+	a.mu.Lock()
+	a.defaultAccess = normalizeOCAccess(access)
+	a.mu.Unlock()
+}
+
 // ResetSession forgets the scope's session mapping (/new, /cd).
 // The on-disk opencode session is left intact but unused.
 func (a *OpenCodeAdapter) ResetSession(scope string) {
@@ -66,7 +77,7 @@ func (a *OpenCodeAdapter) Run(opts RunOptions) (Run, error) {
 	if opts.Cwd == "" {
 		return nil, fmt.Errorf("cwd is required for OpenCodeAdapter.Run")
 	}
-	srv, err := a.ensureServer()
+	srv, err := a.ensureServerForAccess(opts.Access)
 	if err != nil {
 		return nil, err
 	}
@@ -90,8 +101,11 @@ func (a *OpenCodeAdapter) Run(opts RunOptions) (Run, error) {
 		body["system"] = sys
 	}
 	if model != "" {
-		if provider, m, ok := splitModel(model); ok {
+		if provider, m, variant, ok := splitModel(model); ok {
 			body["model"] = map[string]any{"providerID": provider, "modelID": m}
+			if variant != "" {
+				body["variant"] = variant
+			}
 		}
 	}
 	// Attach local images as file parts (opencode reads them from disk).
@@ -115,12 +129,19 @@ func (a *OpenCodeAdapter) Run(opts RunOptions) (Run, error) {
 	return run, nil
 }
 
-func splitModel(model string) (provider, id string, ok bool) {
+func splitModel(model string) (provider, id, variant string, ok bool) {
 	parts := strings.SplitN(model, "/", 2)
 	if len(parts) != 2 {
-		return "", "", false
+		return "", "", "", false
 	}
-	return parts[0], parts[1], true
+	id = parts[1]
+	if modelParts := strings.SplitN(id, "#", 2); len(modelParts) == 2 {
+		id, variant = modelParts[0], modelParts[1]
+	}
+	if parts[0] == "" || id == "" {
+		return "", "", "", false
+	}
+	return parts[0], id, variant, true
 }
 
 func guessMime(path string) string {
@@ -183,6 +204,7 @@ func (s *ocServer) fetchSessionModel(sessionID, directory string) string {
 		Model struct {
 			ID         string `json:"id"`
 			ProviderID string `json:"providerID"`
+			Variant    string `json:"variant"`
 		} `json:"model"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -191,14 +213,26 @@ func (s *ocServer) fetchSessionModel(sessionID, directory string) string {
 	if out.Model.ProviderID == "" || out.Model.ID == "" {
 		return ""
 	}
-	return out.Model.ProviderID + "/" + out.Model.ID
+	model := out.Model.ProviderID + "/" + out.Model.ID
+	if out.Model.Variant != "" && out.Model.Variant != "default" {
+		model += "#" + out.Model.Variant
+	}
+	return model
 }
 
 // ensureServer starts (or restarts) the opencode serve process.
 func (a *OpenCodeAdapter) ensureServer() (*ocServer, error) {
 	a.mu.Lock()
+	access := a.defaultAccess
+	a.mu.Unlock()
+	return a.ensureServerForAccess(access)
+}
+
+func (a *OpenCodeAdapter) ensureServerForAccess(access config.AccessLevel) (*ocServer, error) {
+	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.server != nil && a.server.healthy() {
+	access = normalizeOCAccess(access)
+	if a.server != nil && a.server.access == access && a.server.healthy() {
 		return a.server, nil
 	}
 	if a.server != nil {
@@ -210,7 +244,7 @@ func (a *OpenCodeAdapter) ensureServer() (*ocServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	srv, err := startOCServer(a.binary, port, a.Env)
+	srv, err := startOCServer(a.binary, port, a.Env, a.runtime, access)
 	if err != nil {
 		return nil, err
 	}
@@ -233,6 +267,7 @@ type ocServer struct {
 	cmd    *exec.Cmd
 	base   string
 	client *http.Client
+	access config.AccessLevel
 
 	mu         sync.Mutex
 	runs       map[string]map[uint64]*ocRun // sessionID → runs
@@ -247,9 +282,13 @@ type ocServer struct {
 	delivered map[string]map[string]string
 }
 
-func startOCServer(binary string, port int, env map[string]string) (*ocServer, error) {
-	cmd := exec.Command(binary, "serve", "--port", fmt.Sprint(port), "--hostname", "127.0.0.1")
-	cmd.Env = mergeEnv(env)
+func startOCServer(binary string, port int, env map[string]string, runtime config.AgentRuntime, access config.AccessLevel) (*ocServer, error) {
+	serverEnv, err := openCodeServerEnv(env, access)
+	if err != nil {
+		return nil, err
+	}
+	cmd := agentCommand(runtime, binary, "serve", "--port", fmt.Sprint(port), "--hostname", "127.0.0.1")
+	cmd.Env = mergeEnv(serverEnv)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to spawn opencode serve: %w", err)
 	}
@@ -258,6 +297,7 @@ func startOCServer(binary string, port int, env map[string]string) (*ocServer, e
 		cmd:        cmd,
 		base:       fmt.Sprintf("http://127.0.0.1:%d", port),
 		client:     &http.Client{Timeout: 30 * time.Second},
+		access:     access,
 		runs:       map[string]map[uint64]*ocRun{},
 		partKinds:  map[string]string{},
 		eventLoops: map[string]bool{},
@@ -294,6 +334,61 @@ func startOCServer(binary string, port int, env map[string]string) (*ocServer, e
 	}()
 
 	return srv, nil
+}
+
+func normalizeOCAccess(access config.AccessLevel) config.AccessLevel {
+	switch access {
+	case config.AccessWorkspace, config.AccessReadOnly:
+		return access
+	default:
+		return config.AccessFull
+	}
+}
+
+// openCodeServerEnv merges the profile access policy into OpenCode's in-memory
+// config overlay. Existing non-permission fields are preserved.
+func openCodeServerEnv(base map[string]string, access config.AccessLevel) (map[string]string, error) {
+	out := mergeEnvMaps(nil, base)
+	raw := out["OPENCODE_CONFIG_CONTENT"]
+	if raw == "" {
+		raw = os.Getenv("OPENCODE_CONFIG_CONTENT")
+	}
+	content := map[string]any{}
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &content); err != nil {
+			return nil, fmt.Errorf("解析 OPENCODE_CONFIG_CONTENT: %w", err)
+		}
+	}
+	content["permission"] = openCodePermissionPolicy(access)
+	encoded, err := json.Marshal(content)
+	if err != nil {
+		return nil, fmt.Errorf("生成 OpenCode 权限配置: %w", err)
+	}
+	out["OPENCODE_CONFIG_CONTENT"] = string(encoded)
+	return out, nil
+}
+
+func openCodePermissionPolicy(access config.AccessLevel) any {
+	switch normalizeOCAccess(access) {
+	case config.AccessWorkspace:
+		return map[string]any{
+			"edit":               "allow",
+			"bash":               "ask",
+			"external_directory": "deny",
+			"webfetch":           "ask",
+			"websearch":          "ask",
+		}
+	case config.AccessReadOnly:
+		return map[string]any{
+			"edit":               "deny",
+			"bash":               "deny",
+			"external_directory": "deny",
+			"webfetch":           "ask",
+			"websearch":          "ask",
+		}
+	default:
+		return "allow"
+	}
 }
 
 func (s *ocServer) healthy() bool {
@@ -532,7 +627,7 @@ func (s *ocServer) translate(env ocEventEnvelope) (events []Event, terminal bool
 		// OpenCode native question tool — bridge shows a Feishu card and
 		// replies via POST /question/{id}/reply (ADR-0008). Reply is bound
 		// in dispatch() with the run's directory.
-		qid, questions := parseOCQuestions(props)
+		qid, questions, freeform := parseOCQuestions(props)
 		if qid == "" || len(questions) == 0 {
 			return nil, false
 		}
@@ -540,6 +635,7 @@ func (s *ocServer) translate(env ocEventEnvelope) (events []Event, terminal bool
 			Type:      EventAskUser,
 			AskID:     qid,
 			Questions: questions,
+			Freeform:  freeform,
 			Source:    "opencode",
 		}}, false
 
@@ -888,43 +984,119 @@ func (a *OpenCodeAdapter) ListSessions(limit int) ([]ExternalSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	var raw []struct {
-		ID        string `json:"id"`
-		Title     string `json:"title"`
-		Directory string `json:"directory"`
-		Time      struct {
-			Created int64 `json:"created"`
-			Updated int64 `json:"updated"`
-		} `json:"time"`
+	return srv.listSessionsAcrossProjects(limit)
+}
+
+type ocSessionSummary struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Directory string `json:"directory"`
+	Time      struct {
+		Created int64 `json:"created"`
+		Updated int64 `json:"updated"`
+	} `json:"time"`
+}
+
+func (s *ocServer) listSessionsAcrossProjects(limit int) ([]ExternalSession, error) {
+	var projects []struct {
+		Worktree  string   `json:"worktree"`
+		Sandboxes []string `json:"sandboxes"`
 	}
-	resp, err := srv.client.Get(srv.base + "/session")
+	resp, err := s.client.Get(s.base + "/project")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("查询 OpenCode 项目: %w", err)
 	}
-	defer resp.Body.Close()
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return nil, err
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("查询 OpenCode 项目: HTTP %d", resp.StatusCode)
 	}
-	sort.Slice(raw, func(i, j int) bool { return raw[i].Time.Updated > raw[j].Time.Updated })
-	var out []ExternalSession
-	for _, r := range raw {
-		if limit > 0 && len(out) >= limit {
-			break
+	err = json.NewDecoder(resp.Body).Decode(&projects)
+	resp.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("解析 OpenCode 项目: %w", err)
+	}
+
+	directories := map[string]struct{}{}
+	for _, project := range projects {
+		if project.Worktree != "" {
+			directories[project.Worktree] = struct{}{}
+		}
+		for _, directory := range project.Sandboxes {
+			if directory != "" {
+				directories[directory] = struct{}{}
+			}
+		}
+	}
+	if len(directories) == 0 {
+		directories[""] = struct{}{}
+	}
+
+	byID := map[string]ocSessionSummary{}
+	var failures []string
+	for directory := range directories {
+		rows, listErr := s.listSessionsForDirectory(directory, limit)
+		if listErr != nil {
+			failures = append(failures, listErr.Error())
+			continue
+		}
+		for _, row := range rows {
+			if previous, ok := byID[row.ID]; !ok || row.Time.Updated > previous.Time.Updated {
+				byID[row.ID] = row
+			}
+		}
+	}
+	if len(byID) == 0 && len(failures) > 0 {
+		return nil, fmt.Errorf("查询 OpenCode 会话失败: %s", strings.Join(failures, "; "))
+	}
+
+	out := make([]ExternalSession, 0, len(byID))
+	for _, row := range byID {
+		if row.ID == "" {
+			continue
 		}
 		out = append(out, ExternalSession{
-			ID:        r.ID,
-			Cwd:       r.Directory,
-			Preview:   r.Title,
-			UpdatedAt: time.UnixMilli(r.Time.Updated),
+			ID:        row.ID,
+			Cwd:       row.Directory,
+			Preview:   row.Title,
+			UpdatedAt: time.UnixMilli(row.Time.Updated),
 			Agent:     config.AgentOpenCode,
 		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }
 
+func (s *ocServer) listSessionsForDirectory(directory string, limit int) ([]ocSessionSummary, error) {
+	endpoint := s.base + "/session"
+	separator := "?"
+	if directory != "" {
+		endpoint += separator + "directory=" + urlQueryEscape(directory)
+		separator = "&"
+	}
+	if limit > 0 {
+		endpoint += separator + "limit=" + fmt.Sprint(limit)
+	}
+	resp, err := s.client.Get(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", directory, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s: HTTP %d", directory, resp.StatusCode)
+	}
+	var rows []ocSessionSummary
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		return nil, fmt.Errorf("%s: %w", directory, err)
+	}
+	return rows, nil
+}
+
 // parseOCQuestions normalizes OpenCode question.asked properties into
 // bridge AskQuestion values.
-func parseOCQuestions(props map[string]any) (id string, questions []AskQuestion) {
+func parseOCQuestions(props map[string]any) (id string, questions []AskQuestion, freeform bool) {
 	id, _ = props["id"].(string)
 	if id == "" {
 		id, _ = props["questionID"].(string)
@@ -936,8 +1108,9 @@ func parseOCQuestions(props map[string]any) (id string, questions []AskQuestion)
 			continue
 		}
 		prompt, _ := m["question"].(string)
-		if prompt == "" {
-			prompt, _ = m["header"].(string)
+		header, _ := m["header"].(string)
+		if header != "" && header != prompt {
+			prompt = "**" + header + "**\n" + prompt
 		}
 		multi, _ := m["multiple"].(bool)
 		if !multi {
@@ -954,15 +1127,26 @@ func parseOCQuestions(props map[string]any) (id string, questions []AskQuestion)
 				if label == "" {
 					continue
 				}
+				description, _ := om["description"].(string)
+				if description != "" {
+					prompt += "\n- **" + label + "**: " + description
+				}
 				opts = append(opts, AskOption{Key: label, Label: label})
 			}
 		}
-		if prompt == "" || len(opts) == 0 {
+		custom, _ := m["custom"].(bool)
+		if prompt == "" || (len(opts) == 0 && !custom) {
 			continue
+		}
+		if custom && len(rawList) == 1 {
+			freeform = true
+		}
+		if len(opts) == 0 {
+			opts = []AskOption{{Key: "__other__", Label: "请直接发送文字回答"}}
 		}
 		questions = append(questions, AskQuestion{Prompt: prompt, Options: opts, MultiSelect: multi})
 	}
-	return id, questions
+	return id, questions, freeform
 }
 
 // ocPermissionOptions are fixed reply keys for POST /permission/{id}/reply.

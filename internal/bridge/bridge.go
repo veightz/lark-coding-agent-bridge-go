@@ -56,6 +56,12 @@ type workingReaction struct {
 	reactionID string
 }
 
+type modelPicker struct {
+	Scope     string
+	Models    map[string]agent.ModelInfo
+	ExpiresAt time.Time
+}
+
 // Bridge bundles every dependency of the message pipeline.
 type Bridge struct {
 	Paths       config.Paths
@@ -84,6 +90,9 @@ type Bridge struct {
 
 	reactionsMu sync.Mutex
 	reactions   map[string]workingReaction // scope → working reaction
+
+	modelPickersMu sync.Mutex
+	modelPickers   map[string]modelPicker // one-time nonce → advertised choices
 
 	// Ask broker + per-scope chat routes for Claude hooks / OpenCode questions (ADR-0008).
 	Ask         *ask.Broker
@@ -134,9 +143,13 @@ func NewBridge(
 		cardScopes:      map[string]string{},
 		Ask:             ask.NewBroker(),
 		scopeRoutes:     map[string]ask.Route{},
+		modelPickers:    map[string]modelPicker{},
 		activeCardsPath: paths.ActiveCardsFile(profileName),
 	}
 	b.Ask.SetDispatcher(&larkAskDispatcher{b: b})
+	if configurable, ok := agentAdapter.(agent.AccessConfigurer); ok {
+		configurable.SetDefaultAccess(profile.DefaultAccess())
+	}
 	b.pending = NewPendingQueue(debounceMs*time.Millisecond, b.flush)
 
 	if workspaces.Get() == "" {
@@ -476,6 +489,9 @@ eventLoop:
 	b.removeActiveCard(scope)
 	stream.Finish(summaryOf(runState))
 
+	if latest, ok := b.Sessions.Get(scope); ok && latest.Model != sess.Model {
+		newSess.Model = latest.Model
+	}
 	if newSess.SessionID != "" || newSess.ThreadID != "" {
 		b.Sessions.Set(scope, newSess)
 		// 群聊跑出 session 后自动写入 bindings.json（ADR-0007），
