@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -192,6 +194,7 @@ func agentCommand(runtime config.AgentRuntime, binary string, args ...string) *e
 }
 
 func agentCommandContext(ctx context.Context, runtime config.AgentRuntime, binary string, args ...string) *exec.Cmd {
+	binary = resolveAgentBinary(binary)
 	if runtime.CommandPrefix == "" {
 		if ctx != nil {
 			return exec.CommandContext(ctx, binary, args...)
@@ -214,4 +217,39 @@ func agentCommandContext(ctx context.Context, runtime config.AgentRuntime, binar
 		return exec.CommandContext(ctx, shell, shellArgs...)
 	}
 	return exec.Command(shell, shellArgs...)
+}
+
+// resolveAgentBinary compensates for service managers such as launchd, whose
+// default PATH omits user-level package-manager directories. Keep explicit
+// paths untouched; for bare command names, prefer PATH and then a small,
+// deterministic list of conventional CLI locations under the current user.
+func resolveAgentBinary(binary string) string {
+	if binary == "" || strings.ContainsRune(binary, filepath.Separator) {
+		return binary
+	}
+	if path, err := exec.LookPath(binary); err == nil {
+		return path
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return binary
+	}
+	dirs := []string{
+		filepath.Join(home, ".volta", "bin"),
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, ".bun", "bin"),
+		filepath.Join(home, ".npm-global", "bin"),
+		filepath.Join(home, "Library", "pnpm"),
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+	}
+	for _, dir := range dirs {
+		candidate := filepath.Join(dir, binary)
+		info, statErr := os.Stat(candidate)
+		if statErr == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0 {
+			return candidate
+		}
+	}
+	return binary
 }

@@ -106,6 +106,7 @@ func (a *PiAdapter) spawn(opts RunOptions) (*piSession, error) {
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
 	}
+	args = append(args, piAccessArgs(opts.Access)...)
 	cmd := agentCommand(a.runtime, a.binary, args...)
 	cmd.Dir = opts.Cwd
 	cmd.Env = mergeEnv(a.Env)
@@ -153,12 +154,22 @@ func (a *PiAdapter) spawn(opts RunOptions) (*piSession, error) {
 	return ps, nil
 }
 
+func piAccessArgs(access config.AccessLevel) []string {
+	if access != config.AccessReadOnly {
+		return nil
+	}
+	// Pi 没有进程级 sandbox；只读 profile 至少从源头移除 shell、写文件和
+	// 扩展工具。read/grep/find/ls 是 Pi 0.83 的内置只读工具集合。
+	return []string{"--tools", "read,grep,find,ls"}
+}
+
 // ─── piSession: one RPC process ────────────────────────────────────
 
 type piResponse struct {
 	Success bool
 	Command string
 	Error   string
+	Data    map[string]any
 }
 
 type piSession struct {
@@ -175,6 +186,7 @@ type piSession struct {
 	runChans map[uint64]*piRunSlot // one per in-flight Run
 
 	sessionID string
+	modelID   string
 }
 
 // piRunSlot bundles a run's event channel with a settled signal that
@@ -287,9 +299,19 @@ func (ps *piSession) readLoop(stdout io.Reader) {
 					ps.sessionID = sid
 					ps.mu.Unlock()
 				}
+				model := data["model"]
+				if model == nil && stringField(raw, "command") == "set_model" {
+					model = data
+				}
+				if id := piModelFullID(model); id != "" {
+					ps.mu.Lock()
+					ps.modelID = id
+					ps.mu.Unlock()
+				}
 			}
 			id, _ := raw["id"].(string)
 			resp := piResponse{Command: stringField(raw, "command")}
+			resp.Data, _ = raw["data"].(map[string]any)
 			resp.Success, _ = raw["success"].(bool)
 			if !resp.Success {
 				resp.Error = errorMessage(raw, "pi command failed")
@@ -357,8 +379,21 @@ type piRun struct {
 
 func (ps *piSession) startRun(opts RunOptions) (Run, error) {
 	// Ask for the session id once per process so the bridge can persist it.
-	if ps.sessionID == "" {
-		_, _ = ps.send(map[string]any{"type": "get_state"}, true)
+	ps.mu.Lock()
+	needsState := ps.sessionID == "" || ps.modelID == ""
+	ps.mu.Unlock()
+	if needsState {
+		if resp, err := ps.send(map[string]any{"type": "get_state"}, true); err != nil || !resp.Success {
+			if err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("读取 Pi 会话状态失败: %s", resp.Error)
+		}
+	}
+	if opts.Model != "" {
+		if err := ps.ensureModel(opts.Model); err != nil {
+			return nil, err
+		}
 	}
 
 	ps.mu.Lock()
@@ -367,7 +402,13 @@ func (ps *piSession) startRun(opts RunOptions) (Run, error) {
 	slot := &piRunSlot{ch: make(chan Event, 256), settled: make(chan struct{})}
 	ps.runChans[id] = slot
 	sessionID := ps.sessionID
+	modelID := ps.modelID
 	ch := slot.ch
+	// 在 prompt 交给 Pi 前先入队 system 事件，保证事件顺序稳定，也避免
+	// agent_settled 抢先关闭 channel 后再补发 system 的 send/close 竞态。
+	if sessionID != "" || modelID != "" {
+		ch <- Event{Type: EventSystem, SessionID: sessionID, Model: modelID}
+	}
 	ps.mu.Unlock()
 
 	cmd := map[string]any{
@@ -399,10 +440,42 @@ func (ps *piSession) startRun(opts RunOptions) (Run, error) {
 		return nil, err
 	}
 
-	if sessionID != "" || opts.Model != "" {
-		safeSend(ch, Event{Type: EventSystem, SessionID: sessionID, Model: opts.Model})
-	}
 	return &piRun{ps: ps, events: ch, settled: slot.settled}, nil
+}
+
+// ensureModel applies a persisted /model choice to an already-running RPC
+// process. Passing --model only at spawn time is insufficient because Pi
+// processes are intentionally reused across messages in the same scope.
+func (ps *piSession) ensureModel(want string) error {
+	ps.mu.Lock()
+	current := ps.modelID
+	ps.mu.Unlock()
+	if current == want {
+		return nil
+	}
+	provider, modelID, ok := parsePiModelRef(want)
+	if !ok {
+		return fmt.Errorf("Pi 模型 %q 缺少 provider 前缀，请重新发送 /model", want)
+	}
+	resp, err := ps.send(map[string]any{
+		"type":     "set_model",
+		"provider": provider,
+		"modelId":  modelID,
+	}, true)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("切换 Pi 模型失败: %s", resp.Error)
+	}
+	applied := piModelFullID(resp.Data)
+	if applied == "" {
+		applied = want
+	}
+	ps.mu.Lock()
+	ps.modelID = applied
+	ps.mu.Unlock()
+	return nil
 }
 
 func (r *piRun) Events() <-chan Event { return r.events }
@@ -476,6 +549,15 @@ func translatePiEvent(raw map[string]any) []Event {
 			output = extractTextContent(result["content"])
 		}
 		return []Event{{Type: EventToolResult, ID: stringField(raw, "toolCallId"), Output: output, IsError: isErr}}
+	case "message_end":
+		message, _ := raw["message"].(map[string]any)
+		if message == nil || stringField(message, "role") != "assistant" {
+			return nil
+		}
+		if usage, ok := piUsageEvent(message["usage"]); ok {
+			return []Event{usage}
+		}
+		return nil
 	case "extension_ui_request":
 		// Dialog methods handled in readLoop with a bound Reply; fire-and-forget
 		// methods become a short system note so the run card still shows them.

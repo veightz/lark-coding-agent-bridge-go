@@ -73,6 +73,29 @@ func TestLivePi(t *testing.T) {
 	}
 }
 
+func TestLivePiCapabilities(t *testing.T) {
+	liveEnabled(t)
+	a := NewPiAdapter("pi")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := a.ListModels(ctx, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, err := a.ReadUsage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) == 0 || usage.Activity == nil {
+		t.Fatal("Pi capability response is empty")
+	}
+	t.Logf("models=%d default=%q activity=%+v", len(models), models[0].ID, usage.Activity)
+}
+
 func TestLiveOpenCode(t *testing.T) {
 	liveEnabled(t)
 	a := NewOpenCodeAdapter("opencode")

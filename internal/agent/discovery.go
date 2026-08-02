@@ -198,16 +198,8 @@ func extractClaudeText(content any) string {
 
 // ─── pi: ~/.pi/agent/sessions/*/*.jsonl ────────────────────────────
 
-func piHome() string {
-	if d := os.Getenv("PI_CODING_AGENT_DIR"); d != "" {
-		return d
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".pi", "agent")
-}
-
 func scanPiSessions(limit int) ([]ExternalSession, error) {
-	files, err := collectJSONL(filepath.Join(piHome(), "sessions"), 2)
+	files, err := collectJSONL(piSessionsDir(nil), 2)
 	if err != nil {
 		return nil, err
 	}

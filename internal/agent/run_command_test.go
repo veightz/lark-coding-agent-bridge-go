@@ -61,6 +61,49 @@ func TestAgentCommandContextDirectMode(t *testing.T) {
 	}
 }
 
+func TestAgentCommandFindsUserInstalledCLIWithMinimalPath(t *testing.T) {
+	home := t.TempDir()
+	binDir := filepath.Join(home, ".volta", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(binDir, "pi")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nprintf user-cli"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+
+	cmd := agentCommand(config.AgentRuntime{}, "pi")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "user-cli" {
+		t.Fatalf("output = %q", out)
+	}
+	if cmd.Path != binary {
+		t.Fatalf("resolved path = %q, want %q", cmd.Path, binary)
+	}
+}
+
+func TestResolveAgentBinaryIgnoresNonExecutableCandidate(t *testing.T) {
+	home := t.TempDir()
+	binDir := filepath.Join(home, ".volta", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "pi"), []byte("not executable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+
+	if got := resolveAgentBinary("pi"); got != "pi" {
+		t.Fatalf("resolved non-executable candidate to %q", got)
+	}
+}
+
 func TestAgentCommandSupportsInteractiveShellAlias(t *testing.T) {
 	zsh, err := exec.LookPath("zsh")
 	if err != nil {

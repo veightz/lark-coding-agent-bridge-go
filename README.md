@@ -32,8 +32,8 @@
 - **多工作区**：`/cd` 切换目录，`/ws` 保存 / 复用命名工作区。
 - **图片和文件**：直接发给 bot，自动下载本地并附上路径（pi 走 base64 内嵌，opencode 走 file part）。
 - **模型反问卡片**（ADR-0008/0018）：Claude `AskUserQuestion` / OpenCode `question` / Pi `extension_ui_request` 在飞书弹出交互卡片，点选或直接回复文字后 agent 继续。
-- **Codex / OpenCode 权限接管**（ADR-0011/0014/0018）：`full` 默认放行；受限模式按各 agent 原生协议执行权限策略并在需要时弹飞书确认卡。OpenCode `read-only` 会拒绝 edit/bash，`workspace` 的 bash 与网络请求需确认。
-- **模型与用量**（ADR-0016/0018）：Codex、OpenCode 均支持 `/model`；`/usage` 分别展示 Codex 账户额度或 OpenCode 本地 session/token/cache/cost 统计。
+- **权限模式**（ADR-0011/0014/0018/0019）：Codex / OpenCode 的受限模式按原生协议执行权限策略并在需要时弹飞书确认卡；Pi `read-only` 只启用 `read/grep/find/ls`，移除 shell、写文件和扩展工具。
+- **模型与用量**（ADR-0016/0018/0019）：Codex、OpenCode、Pi 均支持 `/model`；`/usage` 展示 Codex 账户额度，或 OpenCode / Pi 本地 session/token/cache/cost 统计。
 - **扫码向导**：首次运行终端渲染二维码创建 / 绑定 PersonalAgent 应用（复刻 registerApp 协议），也支持 `--app-id`。
 - **多 profile**：独立凭证、会话、工作区与媒体缓存（`--profile` 必填）。
 - **dashboard**：查看本机所有运行中的 bridge 实例及版本（区分发布版 / 开发分支构建）。
@@ -85,8 +85,8 @@ go build -o bin/lark-coding-agent-bridge ./cmd/lark-coding-agent-bridge
 | `/unbind` | 解除当前聊天的会话绑定 |
 | `/stop` | 停止当前运行（同卡片上的 ⏹ 按钮） |
 | `/status` | 查看 profile、agent、工作目录、会话状态 |
-| `/model` | 用交互卡片切换当前会话模型（Codex / OpenCode） |
-| `/usage` | 查看账户额度或本地使用统计（Codex / OpenCode） |
+| `/model` | 用交互卡片切换当前会话模型（Codex / OpenCode / Pi） |
+| `/usage` | 查看账户额度或本地使用统计（Codex / OpenCode / Pi） |
 | `/help` | 帮助 |
 
 私聊无需 @；群聊需要 `@bot`。
@@ -168,7 +168,7 @@ Bridge 时 `--profile <name>` 对应的 `profiles.<name>`，在其中加入 `age
 - 前置命令返回非零时 agent 不会启动。
 - 前置命令成功后，shell 会用 `exec` 替换为真实 agent CLI。
 - agent binary 和参数通过位置参数传递，不会被 shell 二次解析。
-- 配置作用于该 profile 所选 agent 的所有启动路径；Codex/OpenCode 包括正常对话、`/model` 和 `/usage`。
+- 配置作用于该 profile 所选 agent 的 CLI 启动路径；Codex/OpenCode 包括正常对话、`/model` 和 `/usage`，Pi 包括正常对话与 `/model`（Pi `/usage` 直接读取本地 session JSONL，不启动 CLI）。
 - 该设置同样支持 Claude、Pi、OpenCode、Grok 和 Kimi。
 - 交互式 shell 会加载用户配置，可能产生额外输出或副作用，因此优先使用可执行 wrapper
   或显式 `source`。
@@ -190,7 +190,7 @@ Bridge 时 `--profile <name>` 对应的 `profiles.<name>`，在其中加入 `age
 
 ## 权限模式与看门狗
 
-profile 配置中的 `permissions.defaultAccess` 控制 agent 工具权限（`full` 默认 / `workspace` / `read-only`）；`preferences.idleTimeoutMinutes` 控制 run 级 idle 看门狗（默认 10，负值关闭）。OpenCode 使用工具权限规则实现等价产品语义，不等同于 Codex 的进程级 OS sandbox。
+profile 配置中的 `permissions.defaultAccess` 控制 agent 工具权限（`full` 默认 / `workspace` / `read-only`）；`preferences.idleTimeoutMinutes` 控制 run 级 idle 看门狗（默认 10，负值关闭）。OpenCode 使用原生 permission 规则；Pi `read-only` 使用工具 allowlist。两者都不等同于 Codex 的进程级 OS sandbox，Pi `workspace` 也不能阻止 shell 访问工作区外路径。
 
 ## 开发
 

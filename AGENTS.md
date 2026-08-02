@@ -76,5 +76,6 @@ docs/
 后台服务管理、云文档评论、COT 消息、/resume、/config 卡片、secrets 加密、`/invite all group` 批量列举；
 Pi 的 notify/setStatus 等 fire-and-forget UI 不弹卡；Claude 工具级权限仍走 access mode（不做飞书审批卡）；
 Codex 反问与权限确认已通过 app-server 接管（ADR-0014）；OpenCode 工具权限、自由文本反问、模型/用量和跨项目会话已接管（ADR-0011/0018）。
+Pi 的模型热切换、本地用量统计和 read-only 工具 allowlist 已接管（ADR-0019）；Pi workspace 不是 OS sandbox。
 访问控制（owner + `/invite`/`/remove` 白名单）见 ADR-0013。
 详见 `docs/adr/` 与 README「与原版的差异」。
