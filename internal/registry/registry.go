@@ -33,6 +33,38 @@ func registryPath(paths config.Paths) string {
 	return filepath.Join(paths.Home, "registry", "processes.json")
 }
 
+// acquireRegistryLock 打开 registry 目录下的锁文件并获取排它 flock。
+// 多实例同时启动时，各自 upsert 的 load→save 序列需要串行化，否则并发
+// 读写会互相覆盖导致 registry 丢记录（dashboard 看不到部分实例）。
+func acquireRegistryLock(paths config.Paths) (*os.File, error) {
+	dir := filepath.Join(paths.Home, "registry")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, ".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// withLock 在持有注册表文件锁期间执行 fn，保证读改写原子完成。
+func withLock(paths config.Paths, fn func() error) error {
+	f, err := acquireRegistryLock(paths)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}()
+	return fn()
+}
+
 func load(paths config.Paths) ([]Entry, error) {
 	data, err := os.ReadFile(registryPath(paths))
 	if os.IsNotExist(err) {
@@ -54,19 +86,21 @@ func save(paths config.Paths, entries []Entry) error {
 
 // upsert writes or refreshes this process's entry.
 func upsert(paths config.Paths, e Entry) error {
-	entries, _ := load(paths)
-	found := false
-	for i := range entries {
-		if entries[i].PID == e.PID {
-			entries[i] = e
-			found = true
-			break
+	return withLock(paths, func() error {
+		entries, _ := load(paths)
+		found := false
+		for i := range entries {
+			if entries[i].PID == e.PID {
+				entries[i] = e
+				found = true
+				break
+			}
 		}
-	}
-	if !found {
-		entries = append(entries, e)
-	}
-	return save(paths, entries)
+		if !found {
+			entries = append(entries, e)
+		}
+		return save(paths, entries)
+	})
 }
 
 // Register adds this process and starts the heartbeat goroutine.
@@ -105,14 +139,16 @@ func Register(paths config.Paths, profile, agentKind, workspace string) func() {
 
 	return func() {
 		close(stop)
-		entries, _ := load(paths)
-		out := entries[:0]
-		for _, e := range entries {
-			if e.PID != entry.PID {
-				out = append(out, e)
+		_ = withLock(paths, func() error {
+			entries, _ := load(paths)
+			out := entries[:0]
+			for _, e := range entries {
+				if e.PID != entry.PID {
+					out = append(out, e)
+				}
 			}
-		}
-		_ = save(paths, out)
+			return save(paths, out)
+		})
 	}
 }
 
