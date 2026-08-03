@@ -125,7 +125,7 @@ func (c *acpClient) kill() {
 func (c *acpClient) initialize() error {
 	params := map[string]any{
 		"protocolVersion": 1,
-		"clientInfo":      map[string]any{"name": "lark-coding-agent-bridge", "version": "0.2.0"},
+		"clientInfo":      map[string]any{"name": "lark-coding-agent-bridge-go", "version": "0.2.0"},
 		"clientCapabilities": map[string]any{
 			"fs":       map[string]any{"readTextFile": false, "writeTextFile": false},
 			"terminal": false,

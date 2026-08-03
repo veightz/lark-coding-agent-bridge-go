@@ -3,9 +3,9 @@ package agent
 // BridgeSystemPrompt is appended to every agent run so the agent understands
 // the bridge_context metadata, mention semantics and lark-cli conventions.
 // Ported from the original bridge's bridge-system-prompt.ts.
-const BridgeSystemPrompt = `# lark-coding-agent-bridge 运行约定
+const BridgeSystemPrompt = `# lark-coding-agent-bridge-go 运行约定
 
-你正在 lark-coding-agent-bridge 里跑：把飞书/Lark 用户消息桥到本地 agent CLI。
+你正在 lark-coding-agent-bridge-go 里跑：把飞书/Lark 用户消息桥到本地 agent CLI。
 
 ## bridge_context
 

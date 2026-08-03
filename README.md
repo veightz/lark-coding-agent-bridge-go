@@ -48,7 +48,7 @@
 ## 构建
 
 ```
-go build -o bin/lark-coding-agent-bridge ./cmd/lark-coding-agent-bridge
+go build -o bin/lark-coding-agent-bridge-go ./cmd/lark-coding-agent-bridge-go
 ```
 
 要求：Go >= 1.22；本机已安装并登录至少一个 agent CLI（`claude` / `codex` / `pi` / `opencode`）。
@@ -57,15 +57,15 @@ go build -o bin/lark-coding-agent-bridge ./cmd/lark-coding-agent-bridge
 
 ```
 # 启动（默认命令即 run；首次进入扫码向导）
-./bin/lark-coding-agent-bridge run --profile claude-dev --agent claude
-./bin/lark-coding-agent-bridge run --profile pi --agent pi --app-id cli_xxx
-./bin/lark-coding-agent-bridge run --profile oc --agent opencode --app-id cli_xxx
+./bin/lark-coding-agent-bridge-go run --profile claude-dev --agent claude
+./bin/lark-coding-agent-bridge-go run --profile pi --agent pi --app-id cli_xxx
+./bin/lark-coding-agent-bridge-go run --profile oc --agent opencode --app-id cli_xxx
 
 # 观测与运维
-./bin/lark-coding-agent-bridge dashboard      # 运行中的实例、版本、心跳
-./bin/lark-coding-agent-bridge upgrade        # 从源码仓库拉新并重建升级
-./bin/lark-coding-agent-bridge upgrade --check
-./bin/lark-coding-agent-bridge version
+./bin/lark-coding-agent-bridge-go dashboard      # 运行中的实例、版本、心跳
+./bin/lark-coding-agent-bridge-go upgrade        # 从源码仓库拉新并重建升级
+./bin/lark-coding-agent-bridge-go upgrade --check
+./bin/lark-coding-agent-bridge-go version
 ```
 
 常用参数：`--profile <name>`、`--agent claude|codex|pi|opencode`、`--workspace <path>`、`--app-id <id>`。

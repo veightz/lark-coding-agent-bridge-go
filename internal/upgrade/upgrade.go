@@ -79,7 +79,7 @@ func Run(opts Options) error {
 	}
 
 	// Build to a temp file first.
-	tmp, err := os.CreateTemp("", "lark-coding-agent-bridge-*")
+	tmp, err := os.CreateTemp("", "lark-coding-agent-bridge-go-*")
 	if err != nil {
 		return err
 	}
@@ -88,7 +88,7 @@ func Run(opts Options) error {
 	defer os.Remove(tmpPath)
 
 	fmt.Fprintln(out, "正在构建…")
-	build := exec.Command("go", "build", "-o", tmpPath, "./cmd/lark-coding-agent-bridge")
+	build := exec.Command("go", "build", "-o", tmpPath, "./cmd/lark-coding-agent-bridge-go")
 	build.Dir = src
 	if out2, err := build.CombinedOutput(); err != nil {
 		return fmt.Errorf("构建失败: %w\n%s", err, out2)

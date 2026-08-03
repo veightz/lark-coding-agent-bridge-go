@@ -35,7 +35,7 @@ func (a *CodexAdapter) ListModels(ctx context.Context, _ string) ([]ModelInfo, e
 	var initialized map[string]any
 	if err := rpc.request("initialize", map[string]any{
 		"clientInfo": map[string]any{
-			"name":    "lark-coding-agent-bridge",
+			"name":    "lark-coding-agent-bridge-go",
 			"title":   "Lark Coding Agent Bridge",
 			"version": "1",
 		},

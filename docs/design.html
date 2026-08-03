@@ -96,7 +96,7 @@
 <p>重点学习参考：<a href="https://github.com/deepcoldy/botmux">deepcoldy/botmux</a>（ask-broker / ask-card / hook 链路）；原版起点 <a href="https://github.com/zarazhangrui/lark-coding-agent-bridge">lark-channel-bridge</a>。</p>
 
 <h2 id="s2"><span class="no">2</span>总体架构</h2>
-<p>单一二进制 <code>cmd/lark-coding-agent-bridge</code> 提供 <code>run</code> / <code>dashboard</code> / <code>upgrade</code> / <code>version</code> 四个子命令。<code>run</code> 启动桥接主循环：通过 WS 长连接接收飞书事件，消息经归一化、防抖合并后驱动 agent 运行，运行事件流经状态机归约渲染为卡片，再经节流后通过 CardKit API 推回飞书。</p>
+<p>单一二进制 <code>cmd/lark-coding-agent-bridge-go</code> 提供 <code>run</code> / <code>dashboard</code> / <code>upgrade</code> / <code>version</code> 四个子命令。<code>run</code> 启动桥接主循环：通过 WS 长连接接收飞书事件，消息经归一化、防抖合并后驱动 agent 运行，运行事件流经状态机归约渲染为卡片，再经节流后通过 CardKit API 推回飞书。</p>
 
 <div class="fig">
 <svg viewBox="0 0 960 700" width="900" role="img" aria-label="总体架构图">

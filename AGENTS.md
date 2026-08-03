@@ -32,7 +32,7 @@
 go build ./...                 # 编译
 go test ./...                  # 全部测试（必须全绿）
 go vet ./... && gofmt -l .     # 静态检查（必须无输出）
-go build -o bin/lark-coding-agent-bridge ./cmd/lark-coding-agent-bridge
+go build -o bin/lark-coding-agent-bridge-go ./cmd/lark-coding-agent-bridge-go
 ```
 
 CLI：`run`（默认）/ `dashboard` / `upgrade [--check]` / `version`。
@@ -40,7 +40,7 @@ CLI：`run`（默认）/ `dashboard` / `upgrade [--check]` / `version`。
 ## 仓库地图
 
 ```
-cmd/lark-coding-agent-bridge/   CLI 入口与子命令
+cmd/lark-coding-agent-bridge-go/   CLI 入口与子命令
 internal/
   onboard/      扫码注册向导（registerApp 协议复刻）
   config/       根配置 + 路径布局（~/.lark-coding-agent-bridge/）

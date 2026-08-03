@@ -22,7 +22,7 @@ const (
 	defaultFeishuDomain = "accounts.feishu.cn"
 	defaultLarkDomain   = "accounts.larksuite.com"
 	registrationPath    = "/oauth/v1/app/registration"
-	source              = "go-sdk/lark-coding-agent-bridge"
+	source              = "go-sdk/lark-coding-agent-bridge-go"
 )
 
 // Result carries the freshly created app's credentials.

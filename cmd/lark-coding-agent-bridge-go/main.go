@@ -1,4 +1,4 @@
-// lark-coding-agent-bridge bridges Feishu/Lark messenger with local
+// lark-coding-agent-bridge-go bridges Feishu/Lark messenger with local
 // coding-agent CLIs (Claude Code, Codex CLI, pi, opencode) — a Go port of
 // lark-channel-bridge (github.com/zarazhangrui/lark-coding-agent-bridge).
 //
@@ -80,7 +80,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Println(`用法: lark-coding-agent-bridge [命令] [参数]
+	fmt.Println(`用法: lark-coding-agent-bridge-go [命令] [参数]
 
 命令:
   run         启动 bot（默认命令）  --profile --agent --workspace --app-id
@@ -92,7 +92,7 @@ func usage() {
 
 func printVersion() {
 	info := buildinfo.Current()
-	fmt.Printf("lark-coding-agent-bridge %s\n", info.Short())
+	fmt.Printf("lark-coding-agent-bridge-go %s\n", info.Short())
 	if info.Commit != "" {
 		fmt.Printf("commit: %s (%s)\n", info.Commit, info.CommitTime)
 	}
@@ -267,7 +267,7 @@ func handleCardAction(br *bridge.Bridge, event *callback.CardActionTriggerEvent)
 
 // errMissingProfile returns a clear error when --profile is omitted.
 func errMissingProfile(paths config.Paths) error {
-	msg := "请指定 --profile <name>（例如: lark-coding-agent-bridge run --profile oc）"
+	msg := "请指定 --profile <name>（例如: lark-coding-agent-bridge-go run --profile oc）"
 	if cfg, err := config.Load(paths); err == nil && cfg != nil && len(cfg.Profiles) > 0 {
 		names := make([]string, 0, len(cfg.Profiles))
 		for name := range cfg.Profiles {
@@ -431,7 +431,7 @@ func injectAgentEnv(adapter agent.Adapter, paths config.Paths, profileName strin
 // passthrough when the bridge is unreachable / payload is not our concern.
 func cmdHook(args []string) error {
 	if len(args) == 0 || args[0] != "claude" {
-		return fmt.Errorf("用法: lark-coding-agent-bridge hook claude")
+		return fmt.Errorf("用法: lark-coding-agent-bridge-go hook claude")
 	}
 	raw, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
 	if err != nil {

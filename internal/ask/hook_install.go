@@ -98,7 +98,7 @@ func isBridgeAskGroup(g map[string]any) bool {
 		}
 		cmd, _ := hm["command"].(string)
 		if strings.Contains(cmd, "hook claude") &&
-			(strings.Contains(cmd, "lark-coding-agent-bridge") || strings.Contains(cmd, "LARK_BRIDGE") || strings.Contains(cmd, "hook claude")) {
+			(strings.Contains(cmd, "lark-coding-agent-bridge-go") || strings.Contains(cmd, "LARK_BRIDGE") || strings.Contains(cmd, "hook claude")) {
 			return true
 		}
 		if strings.Contains(cmd, "hook claude") {
