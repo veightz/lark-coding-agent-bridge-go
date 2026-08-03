@@ -187,6 +187,10 @@ type piSession struct {
 
 	sessionID string
 	modelID   string
+	// contextWindow is the current model's context window in tokens, read
+	// from the RPC get_state/set_model response so ctx% can use the
+	// agent-reported value instead of only the static pricing table.
+	contextWindow int
 }
 
 // piRunSlot bundles a run's event channel with a settled signal that
@@ -308,6 +312,13 @@ func (ps *piSession) readLoop(stdout io.Reader) {
 					ps.modelID = id
 					ps.mu.Unlock()
 				}
+				if m, ok := model.(map[string]any); ok {
+					if cw, ok := m["contextWindow"].(float64); ok && cw > 0 {
+						ps.mu.Lock()
+						ps.contextWindow = int(cw)
+						ps.mu.Unlock()
+					}
+				}
 			}
 			id, _ := raw["id"].(string)
 			resp := piResponse{Command: stringField(raw, "command")}
@@ -403,11 +414,12 @@ func (ps *piSession) startRun(opts RunOptions) (Run, error) {
 	ps.runChans[id] = slot
 	sessionID := ps.sessionID
 	modelID := ps.modelID
+	contextWindow := ps.contextWindow
 	ch := slot.ch
 	// 在 prompt 交给 Pi 前先入队 system 事件，保证事件顺序稳定，也避免
 	// agent_settled 抢先关闭 channel 后再补发 system 的 send/close 竞态。
 	if sessionID != "" || modelID != "" {
-		ch <- Event{Type: EventSystem, SessionID: sessionID, Model: modelID}
+		ch <- Event{Type: EventSystem, SessionID: sessionID, Model: modelID, ContextWindow: contextWindow}
 	}
 	ps.mu.Unlock()
 

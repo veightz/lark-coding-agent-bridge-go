@@ -85,7 +85,10 @@ func Render(state *RunState, opts RenderOptions) map[string]any {
 			elements = append(elements, noteMd("🤖 "+state.Stats.Model))
 		}
 		if state.Stats.UsageAvailable && state.Stats.ContextTokens() > 0 {
-			cw := pricing.ContextWindow(state.Stats.Model)
+			cw := state.Stats.ContextWindow
+			if cw <= 0 {
+				cw = pricing.ContextWindow(state.Stats.Model)
+			}
 			if cw > 0 {
 				pct := float64(state.Stats.ContextTokens()) * 100 / float64(cw)
 				elements = append(elements, noteMd(fmt.Sprintf("ctx %.1f%%", pct)))
@@ -402,7 +405,10 @@ func formatContextUsage(stats *RunStats) string {
 	if ctx == 0 {
 		return ""
 	}
-	cw := pricing.ContextWindow(stats.Model)
+	cw := stats.ContextWindow
+	if cw <= 0 {
+		cw = pricing.ContextWindow(stats.Model)
+	}
 	if cw > 0 {
 		pct := float64(ctx) * 100 / float64(cw)
 		return fmt.Sprintf("ctx %.1f%%", pct)

@@ -79,6 +79,9 @@ type RunStats struct {
 	Model                 string  // model name from EventSystem
 	Cwd                   string  // working directory
 	UsageAvailable        bool    // true if any usage data was reported
+	// ContextWindow is the model's context window in tokens reported by the
+	// agent runtime; 0 means unknown (renderer falls back to pricing table).
+	ContextWindow int
 	// Agent conversation handles (for footer: tell runs/sessions apart).
 	SessionID string // claude / pi / opencode session id
 	ThreadID  string // codex thread id
@@ -214,6 +217,9 @@ func (s *RunState) Reduce(evt agent.Event) *RunState {
 		}
 		if evt.ThreadID != "" {
 			next.Stats.ThreadID = evt.ThreadID
+		}
+		if evt.ContextWindow > 0 {
+			next.Stats.ContextWindow = evt.ContextWindow
 		}
 
 	case agent.EventUsage:

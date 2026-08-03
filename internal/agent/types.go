@@ -62,6 +62,9 @@ type Event struct {
 	ThreadID  string
 	Cwd       string
 	Model     string
+	// ContextWindow is the model's context window in tokens as reported by
+	// the agent runtime (0 = unknown; fall back to the pricing table).
+	ContextWindow int
 
 	// text / thinking deltas
 	Delta string

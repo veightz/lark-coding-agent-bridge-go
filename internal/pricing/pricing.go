@@ -34,6 +34,11 @@ func init() {
 	register("deepseek-reasoner", Rates{Input: 1.0, Output: 4.0, CacheRead: 0.25, ContextWindow: 131072}, 2.0)
 	register("deepseek/deepseek-r1", Rates{Input: 1.0, Output: 4.0, CacheRead: 0.25, ContextWindow: 131072}, 2.0)
 
+	// deepseek-v4 series (pi catalog reports contextWindow 1048576; rates
+	// from the pi models store: USD per 1M tokens).
+	register("deepseek/deepseek-v4-flash", Rates{Input: 0.14, Output: 0.28, CacheRead: 0.0028, ContextWindow: 1048576}, 2.0)
+	register("deepseek/deepseek-v4-pro", Rates{Input: 0.435, Output: 0.87, CacheRead: 0.003625, ContextWindow: 1048576}, 2.0)
+
 	register("claude-sonnet-4-", Rates{Input: 22.0, Output: 110.0, CacheRead: 2.2, ContextWindow: 200000}, 0)
 	register("claude-sonnet-4", Rates{Input: 22.0, Output: 110.0, CacheRead: 2.2, ContextWindow: 200000}, 0)
 	register("claude-3.5-sonnet", Rates{Input: 22.0, Output: 110.0, CacheRead: 2.2, ContextWindow: 200000}, 0)
