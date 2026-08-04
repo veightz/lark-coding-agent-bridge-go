@@ -47,16 +47,19 @@
 
 ## 构建
 
-```
+要求：Go >= 1.25。
+
+```bash
+mkdir -p bin
 go build -o bin/lark-coding-agent-bridge-go ./cmd/lark-coding-agent-bridge-go
 ```
 
-要求：Go >= 1.22；本机已安装并登录至少一个 agent CLI（`claude` / `codex` / `pi` / `opencode`）。
-
 ## 使用
 
-```
-# 启动（默认命令即 run；首次进入扫码向导）
+运行前，本机需已安装并登录至少一个 agent CLI（`claude` / `codex` / `pi` / `opencode`）。
+
+```bash
+# 启动（默认命令即 run；未保存应用凭证且未指定 --app-id 时进入扫码向导）
 ./bin/lark-coding-agent-bridge-go run --profile claude-dev --agent claude
 ./bin/lark-coding-agent-bridge-go run --profile pi --agent pi --app-id cli_xxx
 ./bin/lark-coding-agent-bridge-go run --profile oc --agent opencode --app-id cli_xxx
@@ -67,6 +70,8 @@ go build -o bin/lark-coding-agent-bridge-go ./cmd/lark-coding-agent-bridge-go
 ./bin/lark-coding-agent-bridge-go upgrade --check
 ./bin/lark-coding-agent-bridge-go version
 ```
+
+指定 `--app-id` 时会跳过扫码，并提示输入 App Secret。
 
 常用参数：`--profile <name>`、`--agent claude|codex|pi|opencode`、`--workspace <path>`、`--app-id <id>`。
 
