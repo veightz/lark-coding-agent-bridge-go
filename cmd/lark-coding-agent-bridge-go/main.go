@@ -247,7 +247,14 @@ func handleCardAction(br *bridge.Bridge, event *callback.CardActionTriggerEvent)
 	if event.Event.Action != nil {
 		value = event.Event.Action.Value
 	}
-	res := br.HandleCardAction(chatID, messageID, operatorID, value)
+	// 输入类组件（freeform ask 的卡片 input）回调：取输入框值。
+	var inputText string
+	var formValue map[string]any
+	if event.Event.Action != nil {
+		inputText = event.Event.Action.InputValue
+		formValue = event.Event.Action.FormValue
+	}
+	res := br.HandleCardAction(chatID, messageID, operatorID, value, inputText, formValue)
 	if res.Toast == "" && res.Card == nil {
 		return nil
 	}

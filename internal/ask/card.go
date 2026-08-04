@@ -2,6 +2,7 @@ package ask
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -106,6 +107,24 @@ func BuildCard(p *Pending, result *Result) map[string]any {
 					}
 				}
 				elements = append(elements, optionButton(label, btnType, value))
+			}
+			// freeform（pi input/editor）：渲染带回调的卡片输入框，
+			// 用户可直接在卡片输入；聊天文字回复与「取消」路径仍保留。
+			if p.Freeform && !q.MultiSelect {
+				elements = append(elements, map[string]any{
+					"tag":         "input",
+					"element_id":  "ask_input_" + strconv.Itoa(i),
+					"placeholder": map[string]any{"tag": "plain_text", "content": "在此输入作答…"},
+					"behaviors": []map[string]any{{
+						"type": "callback",
+						"value": map[string]any{
+							"cmd":            ActionSubmitInput,
+							"ask_id":         p.ID,
+							"nonce":          p.Nonce,
+							"question_index": i,
+						},
+					}},
+				})
 			}
 		}
 		if requiresSubmit {
@@ -272,6 +291,8 @@ func ToastFor(o ClickOutcome) (kind, content string) {
 		return "info", "该提问已结束"
 	case OutcomeNeedSelection:
 		return "warning", "请先至少选择一项"
+	case OutcomeNeedInput:
+		return "warning", "请输入内容后再提交"
 	case OutcomeStale:
 		return "info", "此提问已失效（可能 bridge 已重启）"
 	default:

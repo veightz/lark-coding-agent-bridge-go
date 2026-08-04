@@ -274,7 +274,7 @@ type codexAppRun struct {
 <div class="note"><b>CLI 定位：</b>共享 <code>agentCommand</code> 启动层先查进程 <code>PATH</code>，再查 Volta、<code>~/.local/bin</code>、Bun、npm、pnpm、Homebrew 等常见用户级目录。因此 launchd 的精简 <code>PATH</code> 不会导致已安装的 <code>pi</code> 无法启动；显式 binary 路径保持不变。</div>
 <pre><code>type PiAdapter struct { /* scope → *piSession 映射，并发安全 */ }
 type piSession struct {
-    cmd     *exec.Cmd            // pi --mode rpc --append-system-prompt &lt;p&gt; [--session-id &lt;id&gt;] [--tools ...]
+    cmd     *exec.Cmd            // pi --mode rpc --append-system-prompt &lt;p&gt; [--session-id &lt;id&gt;] [--extension &lt;ask_user.ts&gt;] [--tools ...]
     stdin   io.Writer
     pending map[int]chan response // id → 响应 channel（send 关联）
     runChans map[string]chan Event // runId → 事件扇出
@@ -301,6 +301,7 @@ func (a *PiAdapter) ListModels(ctx,cwd) // 临时 --no-session RPC：get_state +
 func (a *PiAdapter) ReadUsage(ctx)      // 聚合 Pi session JSONL 的 token/cache/cost
 func (a *PiAdapter) ResetSession(scope string) error // /new → 杀常驻进程，下一轮新建会话</code></pre>
 <div class="note"><b>权限边界：</b>Pi read-only 以 <code>--tools read,grep,find,ls</code> 移除 shell、写文件和扩展工具；full/workspace 保持 Pi 原生工具集。Pi 没有进程级 sandbox，workspace 不能阻止 bash 访问工作区外路径。</div>
+<div class="note"><b>反问扩展（ask_user）：</b>Pi 无内置提问工具，反问能力由社区扩展 <code>npm:pi-ask-user</code> 提供（<code>pi install</code> 写入 <code>~/.pi/agent/settings.json</code> 的 packages，pi 启动时自动加载；RPC 模式下降级为 <code>ctx.ui.select/input</code>，与 bridge 适配层兼容）。模型调用 <code>ask_user</code> 工具 → pi 发 <code>extension_ui_request</code>(select/input) → bridge 转飞书 ask 卡（ADR-0008）。bridge 不再内置/注入扩展（曾用 <code>-e</code> 内置版，2026-08-04 改为社区包，避免重复维护）。read-only 的 <code>--tools</code> allowlist 排除扩展工具。</div>
 
 <h3>3.4 OpenCodeAdapter / ocServer <span class="file">internal/agent/opencode.go</span>（常驻 HTTP+SSE，每 profile 一 server）</h3>
 <pre><code>type OpenCodeAdapter struct { server *ocServer /* 每 profile 一个 */ }
@@ -389,11 +390,12 @@ func (b *Bridge) stopRunByCardMessage(msgID)     // 卡片 ⏹ 按钮 callback�
 
 // idle 看门狗：每个 run 一个 select 循环
 //   case evt := &lt;-run.Events():   刷新计时、驱动卡片；EventAskUser → handleAskUser 阻塞到用户作答
+//                                 → rotateRunCard 新建最新消息并迁移 live stream
 //   case &lt;-time.After(idleTimeout): run.Stop() + 卡片标注「⏱ 长时间无响应，已自动终止」
 //   超时 = preferences.idleTimeoutMinutes（0=默认 10 分钟，负值关闭）；pending ask 时暂停 idle
 //
 // Ask 接线（ADR-0008）：Ask *ask.Broker、AskURL loopback、scopeRoutes；
-// HandleCardAction 识别 ask_select / ask_toggle / ask_submit</code></pre>
+// HandleCardAction 识别 ask_select / ask_toggle / ask_submit / ask_submit_input</code></pre>
 
 <h2 id="s4b"><span class="no">4b</span>internal/ask —— 模型反问（ADR-0008，对标 botmux）</h2>
 <pre><code>// types + broker：Register / Toggle / Select / Submit / InvalidateScope
@@ -409,9 +411,14 @@ func (b *Bridge) stopRunByCardMessage(msgID)     // 卡片 ⏹ 按钮 callback�
 //   access=full（默认）→ auto POST /permission/{id}/reply {reply:always}
 //   workspace 的 ask 事件 → EventAskUser 卡片 once|always|reject；read-only edit/bash 直接 deny
 // Pi：RPC extension_ui_request (select/confirm/input/editor) → EventAskUser → extension_ui_response
-//     input/editor 支持聊天文字 freeform（SubmitComment / tryAnswerAskWithText）
+//     ask_user 工具由社区扩展 npm:pi-ask-user 提供（全局 packages）；RPC 模式降级 select/input
+//     input/editor 的 CardKit input callback 从 action.input_value 取值并 SubmitInput；
+//     同时支持聊天文字 freeform（SubmitComment / tryAnswerAskWithText）
 // Codex（ADR-0014）：app-server requestUserInput / command+file approval /
-//     permissions approval → EventAskUser → JSON-RPC response（原 request id）</code></pre>
+//     permissions approval → EventAskUser → JSON-RPC response（原 request id）
+// ask settle 后：run_card.go rotateRunCard 先创建 continuation 卡，再迁移 activeRun.stream、
+//     cardScopes 与 active-cards；旧卡 MarkContinued + Finish。Claude hook 由 pending ask
+//     的 true→false 转换触发同一轮换；新卡创建失败则保留旧 stream。</code></pre>
 <p>设计对照：botmux <code>src/core/ask-broker.ts</code> / <code>src/im/lark/ask-card.ts</code> / <code>docs/TEST-GUIDE-ask-hooks.md</code>。</p>
 
 <h3>4.2 防抖合并队列 <span class="file">internal/bridge/queue.go</span></h3>

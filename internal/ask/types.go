@@ -68,6 +68,7 @@ const (
 	OutcomeStale          ClickOutcome = "stale"
 	OutcomeAlreadySettled ClickOutcome = "already_settled"
 	OutcomeNeedSelection  ClickOutcome = "need_selection"
+	OutcomeNeedInput      ClickOutcome = "need_input"
 )
 
 // Pending is a snapshot of an in-flight (or recently settled) ask.
@@ -93,4 +94,7 @@ const (
 	ActionSelect = "ask_select" // single-question single-select: click settles
 	ActionToggle = "ask_toggle" // accumulate selection
 	ActionSubmit = "ask_submit" // settle with current selections
+	// ActionSubmitInput settles a freeform ask with the text typed into the
+	// card's input element (pi input/editor).
+	ActionSubmitInput = "ask_submit_input"
 )

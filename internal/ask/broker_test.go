@@ -225,3 +225,104 @@ func TestBuildCard(t *testing.T) {
 		t.Fatalf("template = %v", header["template"])
 	}
 }
+
+// TestBrokerSubmitInput 验证卡片输入框提交：freeform ask 可被非空文本 settle，
+// 空文本、nonce 不匹配与重复提交均拒绝。
+func TestBrokerSubmitInput(t *testing.T) {
+	b := NewBroker()
+	d := &memDispatch{}
+	b.SetDispatcher(d)
+	done := make(chan Result, 1)
+	go func() {
+		r, err := b.Register(CreateInput{
+			Route: Route{ChatID: "oc_x", Scope: "s"},
+			Questions: []Question{{
+				Prompt:  "请输入仓库名",
+				Options: []Option{{Key: "__cancel__", Label: "取消"}},
+			}},
+			Freeform: true,
+			Timeout:  5 * time.Second,
+			Source:   "pi",
+		})
+		if err != nil {
+			t.Errorf("register: %v", err)
+		}
+		done <- r
+	}()
+	var snap *Pending
+	deadline := time.Now().Add(2 * time.Second)
+	for snap == nil && time.Now().Before(deadline) {
+		d.mu.Lock()
+		if len(d.sent) > 0 {
+			snap = d.sent[0]
+		}
+		d.mu.Unlock()
+		if snap == nil {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if snap == nil {
+		t.Fatal("card not dispatched")
+	}
+
+	// 空文本 → 需要输入
+	if got := b.SubmitInput(snap.ID, snap.Nonce, "ou_u", "   "); got != OutcomeNeedInput {
+		t.Fatalf("empty text outcome = %v", got)
+	}
+	// nonce 错误 → stale
+	if got := b.SubmitInput(snap.ID, "bad-nonce", "ou_u", "hello"); got != OutcomeStale {
+		t.Fatalf("bad nonce outcome = %v", got)
+	}
+	// 正确提交
+	if got := b.SubmitInput(snap.ID, snap.Nonce, "ou_u", " my-repo "); got != OutcomeAccepted {
+		t.Fatalf("submit outcome = %v", got)
+	}
+	r := <-done
+	if r.Kind != KindAnswered || r.Comment != "my-repo" {
+		t.Fatalf("result = %+v", r)
+	}
+	// 重复提交 → already settled
+	if got := b.SubmitInput(snap.ID, snap.Nonce, "ou_u", "x"); got != OutcomeAlreadySettled {
+		t.Fatalf("second submit outcome = %v", got)
+	}
+}
+
+// TestBuildCardFreeformInput 验证 freeform ask 输入框直接绑定 callback。
+// CardKit 2.0 会在用户点击输入框提交图标后通过 action.input_value 回传文本。
+func TestBuildCardFreeformInput(t *testing.T) {
+	p := &Pending{
+		ID:         "abc",
+		Nonce:      "n1",
+		DeadlineAt: time.Now().Add(time.Hour),
+		Source:     "pi",
+		Freeform:   true,
+		Questions: []Question{{
+			Prompt:  "请输入内容",
+			Options: []Option{{Key: "__cancel__", Label: "取消"}},
+		}},
+	}
+	card := BuildCard(p, nil)
+	body := card["body"].(map[string]any)
+	elements := body["elements"].([]any)
+	var input map[string]any
+	for _, el := range elements {
+		m, _ := el.(map[string]any)
+		if m["tag"] == "input" {
+			input = m
+		}
+	}
+	if input == nil {
+		t.Fatal("freeform card missing input")
+	}
+	if input["element_id"] != "ask_input_0" {
+		t.Fatalf("input element_id = %v", input["element_id"])
+	}
+	behaviors, _ := input["behaviors"].([]map[string]any)
+	if len(behaviors) != 1 || behaviors[0]["type"] != "callback" {
+		t.Fatalf("input callback behaviors = %#v", input["behaviors"])
+	}
+	value, _ := behaviors[0]["value"].(map[string]any)
+	if value["cmd"] != ActionSubmitInput || value["ask_id"] != "abc" || value["nonce"] != "n1" || value["question_index"] != 0 {
+		t.Fatalf("input callback value = %#v", value)
+	}
+}

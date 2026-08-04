@@ -123,6 +123,35 @@ func TestReduceErrorTerminal(t *testing.T) {
 	}
 }
 
+func TestMarkContinuedFinalizesOnlyPresentationSegment(t *testing.T) {
+	running := InitialState().Reduce(agent.Event{Type: agent.EventText, Delta: "第一段输出"})
+	continued := running.MarkContinued()
+
+	if running.Terminal != TerminalRunning || !running.Blocks[0].Streaming {
+		t.Fatalf("source state was mutated: %+v", running)
+	}
+	if continued.Terminal != TerminalContinued || continued.Footer != FooterNone || continued.Blocks[0].Streaming {
+		t.Fatalf("continued state = %+v", continued)
+	}
+	rendered := Render(continued, RenderOptions{StopButton: true})
+	if rendered["config"].(map[string]any)["streaming_mode"] != false {
+		t.Fatal("continued card must leave streaming mode")
+	}
+	elements := rendered["body"].(map[string]any)["elements"].([]map[string]any)
+	var sawContinuation bool
+	for _, el := range elements {
+		if content, _ := el["content"].(string); strings.Contains(content, "已在下方新卡片继续") {
+			sawContinuation = true
+		}
+		if el["tag"] == "column_set" {
+			t.Fatal("continued card must not retain action buttons")
+		}
+	}
+	if !sawContinuation {
+		t.Fatalf("continuation marker missing: %#v", elements)
+	}
+}
+
 func TestRenderCard(t *testing.T) {
 	s := InitialState()
 	s = s.Reduce(agent.Event{Type: agent.EventText, Delta: "hello contact aabbcc@example.com"})

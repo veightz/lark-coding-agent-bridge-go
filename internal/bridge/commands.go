@@ -622,7 +622,8 @@ type CardActionResult struct {
 }
 
 // HandleCardAction processes card button callbacks (stop / refresh / model / ask).
-func (b *Bridge) HandleCardAction(chatID, messageID, operatorID string, value map[string]any) CardActionResult {
+// inputText / formValue carry card input element values (freeform asks).
+func (b *Bridge) HandleCardAction(chatID, messageID, operatorID string, value map[string]any, inputText string, formValue map[string]any) CardActionResult {
 	if !b.checkOperatorAccess(chatID, operatorID) {
 		return CardActionResult{ToastKind: "error", Toast: "无权限操作"}
 	}
@@ -637,8 +638,8 @@ func (b *Bridge) HandleCardAction(chatID, messageID, operatorID string, value ma
 		return CardActionResult{ToastKind: "info", Toast: b.handleRefresh(chatID, messageID)}
 	case modelSelectAction:
 		return b.handleModelSelect(chatID, value)
-	case ask.ActionSelect, ask.ActionToggle, ask.ActionSubmit:
-		kind, toast, card := b.HandleAskCardAction(operatorID, value)
+	case ask.ActionSelect, ask.ActionToggle, ask.ActionSubmit, ask.ActionSubmitInput:
+		kind, toast, card := b.HandleAskCardAction(operatorID, value, inputText, formValue)
 		return CardActionResult{ToastKind: kind, Toast: toast, Card: card}
 	default:
 		return CardActionResult{}
@@ -754,13 +755,20 @@ func (b *Bridge) forwardToGroup(groupChatID, cardMessageID, userOpenID, text str
 		}
 	}()
 
-	stream := card.NewStream(b.Lark, groupChatID, cardMessageID, false)
+	stream := b.makeRunCardStream(groupChatID, cardMessageID, false)
 	runState := card.InitialState()
 	if err := stream.Start(ctxb(), card.Render(runState, card.RenderOptions{StopButton: true, GroupChat: true})); err != nil {
 		run.Stop()
 		log.Printf("[quick_reply] stream.Start: %v", err)
 		return
 	}
+	b.runsMu.Lock()
+	if ar, ok := b.runs[scope]; ok {
+		ar.startTime = startTime
+		ar.runState = runState
+		ar.stream = stream
+	}
+	b.runsMu.Unlock()
 
 	b.runsMu.Lock()
 	b.cardScopes[stream.MessageID()] = scope
@@ -775,7 +783,13 @@ func (b *Bridge) forwardToGroup(groupChatID, cardMessageID, userOpenID, text str
 	eventsCh := run.Events()
 	for evt := range eventsCh {
 		if evt.Type == agent.EventAskUser {
-			b.handleAskUser(scope, groupChatID, cardMessageID, false, evt)
+			if b.handleAskUser(scope, groupChatID, cardMessageID, false, evt) {
+				if next, rotateErr := b.rotateRunCard(scope, groupChatID, cardMessageID, false, true, false, stream, runState); rotateErr != nil {
+					log.Printf("[ask] rotate quick-reply run card failed: %v", rotateErr)
+				} else {
+					stream = next
+				}
+			}
 			continue
 		}
 		runState = runState.Reduce(evt)

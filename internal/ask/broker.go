@@ -243,6 +243,41 @@ func (b *Broker) Submit(askID, nonce, by string, overrides [][]string) ClickOutc
 	return OutcomeAccepted
 }
 
+// SubmitInput settles a freeform ask with text typed into the card's input
+// element. Same contract as SubmitComment but nonce-verified (input callback).
+func (b *Broker) SubmitInput(askID, nonce, by, text string) ClickOutcome {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return OutcomeNeedInput
+	}
+	b.mu.Lock()
+	ia := b.pending[askID]
+	if ia == nil || ia.Nonce != nonce {
+		b.mu.Unlock()
+		return OutcomeStale
+	}
+	if ia.Settled {
+		b.mu.Unlock()
+		return OutcomeAlreadySettled
+	}
+	if !ia.Freeform {
+		b.mu.Unlock()
+		return OutcomeStale
+	}
+	// 与 SubmitComment 一致：空选项 + Comment，适配层把 Comment 当作答案回填。
+	answers := emptySelections(len(ia.Questions))
+	b.mu.Unlock()
+	if !b.settle(askID, Result{
+		Kind:    KindAnswered,
+		Answers: answers,
+		By:      by,
+		Comment: text,
+	}, true) {
+		return OutcomeAlreadySettled
+	}
+	return OutcomeAccepted
+}
+
 // SubmitComment settles a freeform ask with the user's typed text.
 func (b *Broker) SubmitComment(askID, by, comment string) ClickOutcome {
 	comment = strings.TrimSpace(comment)

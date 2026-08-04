@@ -85,7 +85,7 @@
   <li><b>多 profile</b>：配置与会话/工作区隔离存储在 <code>~/.lark-coding-agent-bridge/</code> 下。</li>
   <li><b>四种 agent 适配器</b>：spawn-per-message（claude、codex）与常驻进程（pi RPC、opencode HTTP+SSE）两类形态，统一为同一事件流抽象。</li>
   <li><b>流式卡片</b>：CardKit 2.0，400ms 节流全卡更新，飞书客户端呈现打字机效果。</li>
-  <li><b>模型反问卡片</b>（ADR-0008 / ADR-0014）：Claude <code>AskUserQuestion</code> / Codex <code>requestUserInput</code> / OpenCode <code>question</code> / Pi <code>extension_ui_request</code> 在飞书弹出交互卡片，用户点选（支持的单题也可文字 freeform）后回填 agent；pending ask 期间暂停 idle 看门狗。</li>
+  <li><b>模型反问卡片</b>（ADR-0008 / ADR-0014）：Claude <code>AskUserQuestion</code> / Codex <code>requestUserInput</code> / OpenCode <code>question</code> / Pi <code>extension_ui_request</code> 在飞书弹出交互卡片，用户点选（单题也可直接输入：freeform 卡片带输入框与提交图标，同时支持聊天文字回复）后回填 agent；pending ask 期间暂停 idle 看门狗。交互结束后旧运行卡定格为“已在下方新卡片继续”，后续输出切换到 ask 卡下方新建的流式卡，保证正在更新的消息始终是会话最新一条。Pi 无内置提问工具，反问由社区扩展 <code>npm:pi-ask-user</code> 提供（全局 packages 自动加载，见 implementation.html 3.3）。</li>
   <li><b>Codex 工具权限</b>（ADR-0014）：<code>workspace</code>/<code>read-only</code> 时 app-server 的命令执行、文件修改与额外权限请求 → 飞书卡 → 原 JSON-RPC request id 回填；<code>full</code> 保持无审批。</li>
   <li><b>OpenCode 工具权限</b>（ADR-0011 / ADR-0018）：server 启动时注入 profile 权限规则；<code>full</code> 全允许，<code>workspace</code> 允许工作区编辑且 shell/网络询问，<code>read-only</code> 拒绝 edit/bash，产生的 ask 事件经飞书卡回填 <code>POST /permission/{id}/reply</code>。这是工具权限约束，不宣称等同于 Codex OS sandbox。</li>
   <li><b>Pi 能力对齐</b>（ADR-0019）：原生 RPC 提供模型目录与常驻进程热切换，本地 session JSONL 提供 token/cache/cost 汇总；<code>read-only</code> 只启用内置只读工具，但不宣称等同于 Codex OS sandbox。</li>
@@ -607,6 +607,7 @@ Codex 返回额度窗口，OpenCode 与 Pi 返回本地 session/token/cache/cost
 <h2 id="s5"><span class="no">5</span>流式卡片机制</h2>
 <p>agent 事件到飞书客户端「打字机效果」的完整链路：<b>事件 → Reduce（不可变状态机）→ Render（CardKit 2.0 JSON）→ 400ms 节流 + 串行更新队列 → cardkit API → 客户端渲染</b>。</p>
 <p><b>私聊话题回复</b>：<code>chat_type=p2p</code> 时，流式卡片与文本回复走 <code>message.reply</code> 并设 <code>reply_in_thread=true</code>，以用户原消息为根创建/进入话题，主会话时间线不再被长回复刷屏。群聊仍为普通引用回复（不强制开话题）。</p>
+<p><b>ask 后卡片分段</b>：ask 交互卡 settle 后，bridge 先在同一会话/话题中新建 continuation 流式卡，再把 active run、停止/刷新按钮路由和 <code>active-cards.json</code> 指针切到新卡；旧运行卡退出 streaming 并显示“已在下方新卡片继续”。因此连续多轮 ask 时，只有时间线最底部的运行卡继续变化。若新卡创建失败则保留旧 stream，agent 仍可继续，不因展示迁移失败而中断。</p>
 <p><b>私聊会话隔离（ADR-0010）</b>：scope = <code>chatId:topicRoot</code>。主时间线每条用户消息是新话题根 → <b>新 agent 会话</b>（不把上一条私聊当上下文）；用户在同一飞书话题内续聊时 <code>root_id</code> 相同 → 续同一 session。卡片结束行展示短 session/thread id（<code>🆔</code>）便于核对。群聊 scope 与 bindings 行为不变。</p>
 
 <div class="fig">

@@ -62,6 +62,7 @@ type Terminal string
 const (
 	TerminalRunning     Terminal = "running"
 	TerminalDone        Terminal = "done"
+	TerminalContinued   Terminal = "continued"
 	TerminalInterrupted Terminal = "interrupted"
 	TerminalError       Terminal = "error"
 	TerminalIdleTimeout Terminal = "idle_timeout"
@@ -300,6 +301,18 @@ func (s *RunState) FinalizeIfRunning() *RunState {
 	next.Blocks = closeStreamingText(s.Blocks)
 	next.Reasoning.Active = false
 	next.Terminal = TerminalDone
+	next.Footer = FooterNone
+	return &next
+}
+
+// MarkContinued finalizes a presentation segment without ending the agent
+// run. The bridge uses it when an ask card is answered, before continuing
+// live output in a newly-created message below that interaction.
+func (s *RunState) MarkContinued() *RunState {
+	next := *s
+	next.Blocks = closeStreamingText(s.Blocks)
+	next.Reasoning.Active = false
+	next.Terminal = TerminalContinued
 	next.Footer = FooterNone
 	return &next
 }

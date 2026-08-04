@@ -99,15 +99,7 @@ func (a *PiAdapter) sessionFor(opts RunOptions) (*piSession, error) {
 }
 
 func (a *PiAdapter) spawn(opts RunOptions) (*piSession, error) {
-	args := []string{"--mode", "rpc", "--append-system-prompt", BuildSystemPrompt(a.botIdentity)}
-	if opts.SessionID != "" {
-		args = append(args, "--session-id", opts.SessionID)
-	}
-	if opts.Model != "" {
-		args = append(args, "--model", opts.Model)
-	}
-	args = append(args, piAccessArgs(opts.Access)...)
-	cmd := agentCommand(a.runtime, a.binary, args...)
+	cmd := agentCommand(a.runtime, a.binary, a.piArgs(opts)...)
 	cmd.Dir = opts.Cwd
 	cmd.Env = mergeEnv(a.Env)
 
@@ -152,6 +144,22 @@ func (a *PiAdapter) spawn(opts RunOptions) (*piSession, error) {
 		ps.mu.Unlock()
 	}()
 	return ps, nil
+}
+
+// piArgs 组装 pi RPC 启动参数。
+// 反问能力（ask_user 工具）由全局安装的社区扩展 npm:pi-ask-user 提供
+// （~/.pi/agent/settings.json 的 packages 列表，pi 启动时自动加载），
+// bridge 不再内置/注入扩展；extension_ui_request 的飞书适配见 internal/ask。
+func (a *PiAdapter) piArgs(opts RunOptions) []string {
+	args := []string{"--mode", "rpc", "--append-system-prompt", BuildSystemPrompt(a.botIdentity)}
+	if opts.SessionID != "" {
+		args = append(args, "--session-id", opts.SessionID)
+	}
+	if opts.Model != "" {
+		args = append(args, "--model", opts.Model)
+	}
+	args = append(args, piAccessArgs(opts.Access)...)
+	return args
 }
 
 func piAccessArgs(access config.AccessLevel) []string {
@@ -658,7 +666,7 @@ func (ps *piSession) translatePiUIRequest(raw map[string]any) []Event {
 			extra = "\n\n预填内容：\n```\n" + truncateRunes(pre, 500) + "\n```"
 		}
 		questions = []AskQuestion{{
-			Prompt: title + extra + "\n\n请在聊天中直接回复文字作答，或点「取消」。",
+			Prompt: title + extra + "\n\n请在下方输入框作答；也可在聊天中直接回复文字，或点「取消」。",
 			Options: []AskOption{
 				{Key: "__cancel__", Label: "取消"},
 			},

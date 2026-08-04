@@ -31,8 +31,21 @@ type activeRun struct {
 	scope     string
 	startTime time.Time
 	runState  *card.RunState
-	stream    *card.Stream
+	stream    runCardStream
 }
+
+// runCardStream is the bridge-facing subset of card.Stream. Keeping the
+// lifecycle behind this interface lets ask-card rotation be tested without
+// sending real Feishu messages.
+type runCardStream interface {
+	Start(context.Context, map[string]any) error
+	MessageID() string
+	CardID() string
+	Update(map[string]any)
+	Finish(string)
+}
+
+type runCardStreamFactory func(chatID, replyTo string, inThread bool) runCardStream
 
 // activeCardEntry persists one in-flight streaming card so the bridge can
 // clean it up on restart.
@@ -94,6 +107,9 @@ type Bridge struct {
 	modelPickersMu sync.Mutex
 	modelPickers   map[string]modelPicker // one-time nonce → advertised choices
 
+	// newRunCardStream is overridden only by tests. Production uses card.Stream.
+	newRunCardStream runCardStreamFactory
+
 	// Ask broker + per-scope chat routes for Claude hooks / OpenCode questions (ADR-0008).
 	Ask         *ask.Broker
 	AskURL      string // loopback base URL for hooks (empty if not started)
@@ -105,6 +121,13 @@ type Bridge struct {
 	botOwnerID string
 	ownerState policy.OwnerState
 	ownerError string
+}
+
+func (b *Bridge) makeRunCardStream(chatID, replyTo string, inThread bool) runCardStream {
+	if b.newRunCardStream != nil {
+		return b.newRunCardStream(chatID, replyTo, inThread)
+	}
+	return card.NewStream(b.Lark, chatID, replyTo, inThread)
 }
 
 // NewBridge wires the pipeline. Call HandleMessage / HandleCardAction.
@@ -320,7 +343,7 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 
 	startTime := time.Now()
 	// 私聊：以用户原消息为根创建话题，流式卡片回复在话题内。
-	stream := card.NewStream(b.Lark, first.ChatID, first.MessageID, inThread)
+	stream := b.makeRunCardStream(first.ChatID, first.MessageID, inThread)
 	runState := card.InitialState()
 	runState.Stats.Cwd = cwd
 	// 续聊时立刻带上已知 session，卡片首帧就能显示 🆔，不必等跑完。
@@ -361,6 +384,7 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 	newSess := state.Session{Cwd: cwd, Model: sess.Model}
 	stopped := false
 	idleFired := false
+	askWasPending := false
 	eventsCh := run.Events()
 
 	heartbeat := time.NewTicker(1 * time.Second)
@@ -385,6 +409,18 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 eventLoop:
 	for {
 		pendingAsk := b.Ask != nil && b.Ask.PendingCountForScope(scope) > 0
+		if pendingAsk {
+			askWasPending = true
+		} else if askWasPending {
+			// Claude hook asks are registered outside the agent event stream.
+			// Once the broker settles, move live output below the ask card.
+			if next, rotateErr := b.rotateRunCard(scope, first.ChatID, first.MessageID, inThread, first.ChatType != "p2p", true, stream, runState); rotateErr != nil {
+				log.Printf("[ask] rotate run card after hook ask failed: %v", rotateErr)
+			} else {
+				stream = next
+			}
+			askWasPending = false
+		}
 		select {
 		case evt, ok := <-eventsCh:
 			if !pendingAsk {
@@ -397,7 +433,13 @@ eventLoop:
 				if idleTimer != nil {
 					idleTimer.Stop()
 				}
-				b.handleAskUser(scope, first.ChatID, first.MessageID, inThread, evt)
+				if b.handleAskUser(scope, first.ChatID, first.MessageID, inThread, evt) {
+					if next, rotateErr := b.rotateRunCard(scope, first.ChatID, first.MessageID, inThread, first.ChatType != "p2p", true, stream, runState); rotateErr != nil {
+						log.Printf("[ask] rotate run card failed: %v", rotateErr)
+					} else {
+						stream = next
+					}
+				}
 				resetIdle()
 				continue
 			}

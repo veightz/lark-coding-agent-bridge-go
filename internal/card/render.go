@@ -56,6 +56,8 @@ func Render(state *RunState, opts RenderOptions) map[string]any {
 	}
 
 	switch state.Terminal {
+	case TerminalContinued:
+		elements = append(elements, noteMd("_↘️ 已在下方新卡片继续_"))
 	case TerminalInterrupted:
 		elements = append(elements, noteMd("_⏹ 已被中断_"))
 	case TerminalIdleTimeout:
@@ -301,6 +303,8 @@ func footerStatus(status FooterStatus, state *RunState) map[string]any {
 
 func summaryText(state *RunState) string {
 	switch state.Terminal {
+	case TerminalContinued:
+		return "已在下方新卡片继续"
 	case TerminalInterrupted:
 		return "已中断"
 	case TerminalIdleTimeout:

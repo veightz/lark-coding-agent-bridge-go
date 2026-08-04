@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,13 +51,13 @@ func (d *larkAskDispatcher) OnSettle(p *ask.Pending, result ask.Result) {
 
 // handleAskUser runs the Feishu card flow for an in-process EventAskUser
 // (OpenCode question / pi extension_ui). Blocks until answered or timeout.
-func (b *Bridge) handleAskUser(scope string, chatID, replyTo string, inThread bool, evt agent.Event) {
+func (b *Bridge) handleAskUser(scope string, chatID, replyTo string, inThread bool, evt agent.Event) bool {
 	if b.Ask == nil {
 		log.Printf("[ask] broker not ready, dropping ask %s", evt.AskID)
 		if evt.Reply != nil {
 			_ = evt.Reply(nil, true)
 		}
-		return
+		return false
 	}
 	questions := make([]ask.Question, 0, len(evt.Questions))
 	for _, q := range evt.Questions {
@@ -74,7 +75,7 @@ func (b *Bridge) handleAskUser(scope string, chatID, replyTo string, inThread bo
 		if evt.Reply != nil {
 			_ = evt.Reply(nil, true)
 		}
-		return
+		return false
 	}
 
 	source := evt.Source
@@ -98,7 +99,7 @@ func (b *Bridge) handleAskUser(scope string, chatID, replyTo string, inThread bo
 		if evt.Reply != nil {
 			_ = evt.Reply(nil, true)
 		}
-		return
+		return false
 	}
 	if result.Kind != ask.KindAnswered {
 		log.Printf("[ask] %s settled as %s (%s)", evt.AskID, result.Kind, result.Reason)
@@ -107,7 +108,7 @@ func (b *Bridge) handleAskUser(scope string, chatID, replyTo string, inThread bo
 				log.Printf("[ask] reply (timeout/invalid) failed: %v", err)
 			}
 		}
-		return
+		return true
 	}
 	// Cancel button on freeform cards.
 	if len(result.Answers) > 0 && len(result.Answers[0]) == 1 && result.Answers[0][0] == "__cancel__" {
@@ -116,7 +117,7 @@ func (b *Bridge) handleAskUser(scope string, chatID, replyTo string, inThread bo
 				log.Printf("[ask] reply (cancel) failed: %v", err)
 			}
 		}
-		return
+		return true
 	}
 	// Permission cards use stable API keys (once/always/reject); question tools
 	// want display labels (OpenCode question reply contract).
@@ -131,6 +132,7 @@ func (b *Bridge) handleAskUser(scope string, chatID, replyTo string, inThread bo
 			log.Printf("[ask] reply to agent failed: %v", err)
 		}
 	}
+	return true
 }
 
 // tryAnswerAskWithText settles a freeform ask (pi input/editor) with chat text.
@@ -153,7 +155,9 @@ func (b *Bridge) tryAnswerAskWithText(chatID, operatorID, text string) bool {
 
 // HandleAskCardAction processes ask_* button callbacks.
 // Returns toastKind, toastContent, and optional card JSON for synchronous replace.
-func (b *Bridge) HandleAskCardAction(operatorID string, value map[string]any) (toastKind, toast string, card map[string]any) {
+// inputText carries the card input element value (freeform submit); formValue
+// is the name→value map of all named form elements on the card.
+func (b *Bridge) HandleAskCardAction(operatorID string, value map[string]any, inputText string, formValue map[string]any) (toastKind, toast string, card map[string]any) {
 	if b.Ask == nil {
 		return "info", "提问服务未就绪", nil
 	}
@@ -175,6 +179,16 @@ func (b *Bridge) HandleAskCardAction(operatorID string, value map[string]any) (t
 		outcome = b.Ask.Toggle(askID, nonce, qi, key, operatorID)
 	case ask.ActionSubmit:
 		outcome = b.Ask.Submit(askID, nonce, operatorID, nil)
+	case ask.ActionSubmitInput:
+		// 输入值优先取 form_value[name]（飞书表单回传），回退到 input_value。
+		qi := anyToInt(value["question_index"])
+		text := ""
+		if v, ok := formValue["ask_input_"+strconv.Itoa(qi)].(string); ok {
+			text = v
+		} else {
+			text = inputText
+		}
+		outcome = b.Ask.SubmitInput(askID, nonce, operatorID, text)
 	default:
 		return "", "", nil
 	}
