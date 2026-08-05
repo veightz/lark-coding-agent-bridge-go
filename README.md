@@ -58,6 +58,24 @@ go build -o bin/lark-coding-agent-bridge-go ./cmd/lark-coding-agent-bridge-go
 
 运行前，本机需已安装并登录至少一个 agent CLI（`claude` / `codex` / `pi` / `opencode`）。
 
+### Pi 反问扩展（pi-ask-user）
+
+使用 `pi` agent 时，**模型反问能力依赖社区扩展 `pi-ask-user`**：模型向你提问时，Pi 通过该扩展的 Extension UI 协议（`extension_ui_request`）把问题交给 Bridge，再由 Bridge 在飞书弹出选择/确认/输入卡片，你的回答会回填给模型继续执行。Bridge **不会自动安装**这个扩展，需要在运行 pi profile 之前手动装一次：
+
+```bash
+pi install npm:pi-ask-user
+```
+
+验证是否已安装（输出应包含 `npm:pi-ask-user`）：
+
+```bash
+pi list
+```
+
+- 未安装时，模型拿不到 `ask_user` 工具，反问会失效：模型无法弹出卡片提问，遇到需要确认的决策时可能自行猜测或行为异常。
+- `permissions.defaultAccess=read-only` 的 pi profile 会通过工具 allowlist 禁用全部扩展工具，此时反问同样不可用——这是安全优先的有意取舍（ADR-0019）。
+- 扩展装在本机 pi 全局配置（`~/.pi/agent/settings.json` 的 `packages` 列表），一台机器装一次即可，对所有 pi profile 生效。
+
 ```bash
 # 启动（默认命令即 run；未保存应用凭证且未指定 --app-id 时进入扫码向导）
 ./bin/lark-coding-agent-bridge-go run --profile claude-dev --agent claude
