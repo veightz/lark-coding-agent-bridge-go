@@ -59,6 +59,26 @@ type codexRPCError struct {
 	Message string `json:"message"`
 }
 
+// synchronizedBuffer is shared by the stderr drain goroutine and startup/exit
+// error reporting. exec.Cmd.Wait may return just before the pipe copier does,
+// so bytes.Buffer alone would race on failure paths.
+type synchronizedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func (e codexRPCError) Error() string {
 	if e.Code == 0 {
 		return e.Message
@@ -110,7 +130,7 @@ func startCodexAppServer(binary, prompt string, opts RunOptions, env []string, r
 		r.access = codexAccessFull
 	}
 
-	var stderrBuf bytes.Buffer
+	var stderrBuf synchronizedBuffer
 	go func() { _, _ = io.Copy(&stderrBuf, stderr) }()
 	go r.readLoop(stdout)
 	go r.waitLoop(&stderrBuf)
@@ -184,16 +204,71 @@ func (r *codexAppRun) initialize(prompt string, opts RunOptions) error {
 	for _, path := range opts.Images {
 		input = append(input, map[string]any{"type": "localImage", "path": path})
 	}
-	turnResp, err := r.request("turn/start", map[string]any{
+	turnParams := map[string]any{
 		"threadId": r.threadID,
 		"input":    input,
-	}, 30*time.Second)
+	}
+	collaborationMode, err := r.resolveCollaborationMode(opts.CollaborationMode)
+	if err != nil {
+		return err
+	}
+	if collaborationMode != nil {
+		turnParams["collaborationMode"] = collaborationMode
+	}
+	turnResp, err := r.request("turn/start", turnParams, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("start Codex turn: %w", err)
 	}
 	turn, _ := turnResp["turn"].(map[string]any)
 	r.turnID = stringField(turn, "id")
 	return nil
+}
+
+// resolveCollaborationMode uses the presets advertised by the running Codex
+// CLI. Plan's model/effort are protocol-owned and may change between releases,
+// so the bridge only persists the stable mode id in sessions.json.
+func (r *codexAppRun) resolveCollaborationMode(mode CollaborationMode) (map[string]any, error) {
+	switch mode {
+	case "", CollaborationModeDefault:
+		// Absence is the app-server's native Default mode.
+		return nil, nil
+	case CollaborationModePlan:
+		// Continue below.
+	default:
+		return nil, fmt.Errorf("Codex 协作模式 %q 无效", mode)
+	}
+
+	resp, err := r.request("collaborationMode/list", map[string]any{}, 15*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("读取 Codex Plan 预设失败（请升级 Codex CLI）: %w", err)
+	}
+	data, _ := resp["data"].([]any)
+	for _, raw := range data {
+		preset, _ := raw.(map[string]any)
+		if CollaborationMode(stringField(preset, "mode")) != mode {
+			continue
+		}
+		model := stringField(preset, "model")
+		if model == "" {
+			model = r.model
+		}
+		if model == "" {
+			return nil, fmt.Errorf("Codex Plan 预设缺少模型，且 thread 未返回当前模型")
+		}
+		settings := map[string]any{
+			"model":                  model,
+			"reasoning_effort":       nil,
+			"developer_instructions": nil,
+		}
+		if effort := stringField(preset, "reasoning_effort"); effort != "" {
+			settings["reasoning_effort"] = effort
+		}
+		return map[string]any{
+			"mode":     string(mode),
+			"settings": settings,
+		}, nil
+	}
+	return nil, fmt.Errorf("当前 Codex CLI 不支持 Plan 协作模式，请升级后重试")
 }
 
 func codexApprovalPolicy(access configAccess) string {
@@ -727,7 +802,7 @@ func (r *codexAppRun) failStartup(err error) {
 	}
 }
 
-func (r *codexAppRun) waitLoop(stderr *bytes.Buffer) {
+func (r *codexAppRun) waitLoop(stderr *synchronizedBuffer) {
 	err := r.cmd.Wait()
 	r.mu.Lock()
 	expected := r.ended || r.stopped

@@ -39,6 +39,7 @@
 - **图片和文件**：直接发给 bot，自动下载本地并附上路径（pi/omp 走 base64 内嵌，opencode 走 file part）。
 - **模型反问卡片**（ADR-0008/0018/0020/0021/0022）：Claude `AskUserQuestion` / OpenCode `question` / Pi·omp `extension_ui_request` / Grok `ask_user_question`（ACP）/ Cursor `cursor/ask_question` 在飞书弹出交互卡片，点选或直接回复文字后 agent 继续。
 - **权限模式**（ADR-0011/0014/0018/0019/0021）：Codex / OpenCode 的受限模式按原生协议执行权限策略并在需要时弹飞书确认卡；Pi `read-only` 只启用 `read/grep/find/ls`；omp `read-only` 启用 `read/grep/glob`（不得照搬 pi 的 find/ls）。
+- **Codex Plan 模式**（ADR-0024）：用 `/mode plan` 让当前话题先检查与规划、不直接实施；确认方案后用 `/mode default` 回到执行模式。模式随当前 scope 持久化。
 - **模型与用量**（ADR-0016/0018/0019/0021）：Codex、OpenCode、Pi、omp 均支持 `/model`；`/usage` 展示 Codex 账户额度，或 OpenCode / Pi / omp 本地 session/token/cache/cost 统计。
 - **扫码向导**：首次运行终端渲染二维码创建 / 绑定 PersonalAgent 应用（复刻 registerApp 协议），也支持 `--app-id`。
 - **多 profile**：独立凭证、会话、工作区与媒体缓存（`--profile` 必填）。
@@ -136,6 +137,7 @@ pi list
 | `/unbind` | 解除当前聊天的会话绑定 |
 | `/stop` | 停止当前运行（同卡片上的 ⏹ 按钮） |
 | `/status` | 查看 profile、agent、工作目录、会话状态 |
+| `/mode plan` / `default` | 切换 Codex 当前会话的 Plan / Default 协作模式 |
 | `/model` | 用交互卡片切换当前会话模型（Codex / OpenCode / Pi / omp） |
 | `/usage` | 查看账户额度或本地使用统计（Codex / OpenCode / Pi / omp） |
 | `/help` | 帮助 |

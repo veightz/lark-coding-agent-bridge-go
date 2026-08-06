@@ -79,6 +79,7 @@ docs/
 后台服务管理、云文档评论、COT 消息、/resume、/config 卡片、secrets 加密、`/invite all group` 批量列举；
 Pi 的 notify/setStatus 等 fire-and-forget UI 不弹卡；Claude 工具级权限仍走 access mode（不做飞书审批卡）；
 Codex 反问与权限确认已通过 app-server 接管（ADR-0014）；OpenCode 工具权限、自由文本反问、模型/用量和跨项目会话已接管（ADR-0011/0018）。
+Codex 原生 Plan/Default 协作模式通过 `/mode` 按 scope 切换（ADR-0024）。
 Pi 的模型热切换、本地用量统计和 read-only 工具 allowlist 已接管（ADR-0019）；Pi workspace 不是 OS sandbox。
 Oh My Pi（`omp`）复用 Pi RPC 事件协议，独立 `agentKind=omp`：续会话用 `--resume`、默认会话树 `~/.omp/agent`、read-only 工具为 `read,grep,glob`（ADR-0021）；不与 `pi` 合并、不自动迁移会话。
 Grok 走 ACP `grok agent stdio`，反问经 `_x.ai/ask_user_question` 接管（ADR-0020）；Grok `/model`、`/usage` 与工具权限审批卡尚未实现。

@@ -106,16 +106,17 @@ type Event struct {
 
 // RunOptions parameterizes one agent invocation.
 type RunOptions struct {
-	RunID       string
-	Scope       string // chat scope; persistent adapters key processes by it
-	Prompt      string
-	Cwd         string
-	SessionID   string // claude --resume / pi --session-id / omp --resume
-	ThreadID    string // codex resume
-	Model       string
-	Images      []string
-	Access      config.AccessLevel
-	StopGraceMs int
+	RunID             string
+	Scope             string // chat scope; persistent adapters key processes by it
+	Prompt            string
+	Cwd               string
+	SessionID         string // claude --resume / pi --session-id / omp --resume
+	ThreadID          string // codex resume
+	Model             string
+	CollaborationMode CollaborationMode
+	Images            []string
+	Access            config.AccessLevel
+	StopGraceMs       int
 	// Env is merged on top of the adapter's base Env for this run
 	// (ask routing: LARK_BRIDGE_* for Claude hooks).
 	Env map[string]string
@@ -165,6 +166,29 @@ type ModelInfo struct {
 	DisplayName string
 	Description string
 	Default     bool
+}
+
+// CollaborationMode is an agent-native conversation workflow. It is
+// deliberately separate from AccessLevel: Plan changes how Codex collaborates,
+// while access controls what tools the process may use.
+type CollaborationMode string
+
+const (
+	CollaborationModeDefault CollaborationMode = "default"
+	CollaborationModePlan    CollaborationMode = "plan"
+)
+
+// CollaborationModeProvider is implemented by adapters that expose native
+// collaboration modes to the bridge's /mode command.
+type CollaborationModeProvider interface {
+	CollaborationModes() []CollaborationModeInfo
+}
+
+// CollaborationModeInfo is one user-selectable native collaboration mode.
+type CollaborationModeInfo struct {
+	ID          CollaborationMode
+	DisplayName string
+	Description string
 }
 
 // UsageSnapshot is a provider-neutral account usage view.

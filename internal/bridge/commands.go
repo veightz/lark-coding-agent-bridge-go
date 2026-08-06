@@ -33,6 +33,7 @@ const helpText = `**可用命令**
 - /unbind — 解除当前聊天的会话绑定
 - /stop — 停止当前运行
 - /status — 查看 profile、agent、工作目录和会话状态
+- /mode plan|default — 切换 Codex 当前会话的 Plan / Default 协作模式
 - /model — 用交互卡片切换当前会话模型
 - /usage — 查看账户额度或本地使用统计
 - /invite user @某人 — 允许对方私聊 bot（owner/admin）
@@ -114,6 +115,9 @@ func (b *Bridge) handleCommand(msg *Message, content string) {
 
 	case "/status":
 		reply(b.statusText(scope))
+
+	case "/mode":
+		b.handleMode(scope, args, reply)
 
 	case "/model":
 		b.handleModel(msg, reply)
@@ -361,6 +365,9 @@ func (b *Bridge) statusText(scope string) string {
 	} else {
 		// 私聊主时间线每条消息是新话题/新会话；话题内才会续聊。
 		sb.WriteString("- 会话: （无；私聊主时间线下一条新建，话题内续聊）\n")
+	}
+	if _, ok := b.Agent.(agent.CollaborationModeProvider); ok {
+		sb.WriteString("- 协作模式: `" + string(b.currentCollaborationMode(scope)) + "`\n")
 	}
 	oc := b.ownerControls()
 	acc := b.policyAccess()
@@ -726,14 +733,15 @@ func (b *Bridge) forwardToGroup(groupChatID, cardMessageID, userOpenID, text str
 	}
 
 	runOpts := agent.RunOptions{
-		RunID:     scope + "-qr-" + time.Now().Format("150405.000"),
-		Scope:     scope,
-		Prompt:    text,
-		Cwd:       cwd,
-		Model:     sess.Model,
-		Access:    b.Profile.DefaultAccess(),
-		SessionID: sess.SessionID,
-		ThreadID:  sess.ThreadID,
+		RunID:             scope + "-qr-" + time.Now().Format("150405.000"),
+		Scope:             scope,
+		Prompt:            text,
+		Cwd:               cwd,
+		Model:             sess.Model,
+		CollaborationMode: agent.CollaborationMode(sess.CollaborationMode),
+		Access:            b.Profile.DefaultAccess(),
+		SessionID:         sess.SessionID,
+		ThreadID:          sess.ThreadID,
 	}
 
 	run, err := b.Agent.Run(runOpts)
@@ -779,7 +787,7 @@ func (b *Bridge) forwardToGroup(groupChatID, cardMessageID, userOpenID, text str
 		b.runsMu.Unlock()
 	}()
 
-	newSess := state.Session{Cwd: cwd, Model: sess.Model}
+	newSess := state.Session{Cwd: cwd, Model: sess.Model, CollaborationMode: sess.CollaborationMode}
 	eventsCh := run.Events()
 	for evt := range eventsCh {
 		if evt.Type == agent.EventAskUser {

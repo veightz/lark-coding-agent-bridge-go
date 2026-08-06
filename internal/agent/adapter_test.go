@@ -105,6 +105,73 @@ done
 	}
 }
 
+func TestCodexAdapterRunsPlanWithAdvertisedPreset(t *testing.T) {
+	fake := writeFakeAgent(t, `
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      echo '{"id":1,"result":{}}'
+      ;;
+    *'"method":"thread/start"'*)
+      echo '{"id":2,"result":{"thread":{"id":"thread-plan"},"model":"gpt-plan-model"}}'
+      ;;
+    *'"method":"collaborationMode/list"'*)
+      echo '{"id":3,"result":{"data":[{"name":"Plan","mode":"plan","model":null,"reasoning_effort":"medium"},{"name":"Default","mode":"default","model":null,"reasoning_effort":null}]}}'
+      ;;
+    *'"method":"turn/start"'*'"collaborationMode"'*'"mode":"plan"'*'"model":"gpt-plan-model"'*'"reasoning_effort":"medium"'*)
+      echo '{"id":4,"result":{"turn":{"id":"turn-plan","status":"inProgress"}}}'
+      echo '{"method":"turn/completed","params":{"threadId":"thread-plan","turn":{"id":"turn-plan","status":"completed","items":[],"error":null}}}'
+      ;;
+    *'"method":"turn/start"'*)
+      echo '{"id":4,"error":{"code":-1,"message":"missing plan collaboration mode"}}'
+      ;;
+  esac
+done
+`)
+	a := &CodexAdapter{binary: fake}
+	run, err := a.Run(RunOptions{
+		RunID:             "codex-plan",
+		Prompt:            "plan this",
+		Cwd:               t.TempDir(),
+		CollaborationMode: CollaborationModePlan,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := drain(run)
+	_, done, failed := summarize(events)
+	if failed || !done {
+		t.Fatalf("events = %+v", events)
+	}
+
+	modes := a.CollaborationModes()
+	if len(modes) != 2 || modes[0].ID != CollaborationModePlan || modes[1].ID != CollaborationModeDefault {
+		t.Fatalf("collaboration modes = %+v", modes)
+	}
+}
+
+func TestCodexAdapterRejectsUnavailablePlanPreset(t *testing.T) {
+	fake := writeFakeAgent(t, `
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) echo '{"id":1,"result":{}}' ;;
+    *'"method":"thread/start"'*) echo '{"id":2,"result":{"thread":{"id":"thread-old"},"model":"gpt"}}' ;;
+    *'"method":"collaborationMode/list"'*) echo '{"id":3,"result":{"data":[{"name":"Default","mode":"default","model":null,"reasoning_effort":null}]}}' ;;
+  esac
+done
+`)
+	a := &CodexAdapter{binary: fake}
+	_, err := a.Run(RunOptions{
+		RunID:             "codex-plan-missing",
+		Prompt:            "plan this",
+		Cwd:               t.TempDir(),
+		CollaborationMode: CollaborationModePlan,
+	})
+	if err == nil || !containsStr(err.Error(), "不支持 Plan") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestCodexAdapterBidirectionalAskAndPermission(t *testing.T) {
 	fake := writeFakeAgent(t, `
 while IFS= read -r line; do

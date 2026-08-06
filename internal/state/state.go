@@ -15,11 +15,12 @@ import (
 
 // Session records the agent conversation handle for one chat scope.
 type Session struct {
-	SessionID string    `json:"sessionId,omitempty"` // claude session id
-	ThreadID  string    `json:"threadId,omitempty"`  // codex thread id
-	Cwd       string    `json:"cwd,omitempty"`
-	Model     string    `json:"model,omitempty"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	SessionID         string    `json:"sessionId,omitempty"` // claude session id
+	ThreadID          string    `json:"threadId,omitempty"`  // codex thread id
+	Cwd               string    `json:"cwd,omitempty"`
+	Model             string    `json:"model,omitempty"`
+	CollaborationMode string    `json:"collaborationMode,omitempty"`
+	UpdatedAt         time.Time `json:"updatedAt"`
 }
 
 // SessionStore persists sessions keyed by scope (chat / thread / comment).

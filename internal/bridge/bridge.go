@@ -319,15 +319,16 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 
 	sess, _ := b.Sessions.Get(scope)
 	runOpts := agent.RunOptions{
-		RunID:     fmt.Sprintf("%s-%d", scope, time.Now().UnixNano()),
-		Scope:     scope,
-		Prompt:    b.buildPrompt(ctx, batch, attachments),
-		Cwd:       cwd,
-		Model:     sess.Model,
-		Images:    images,
-		Access:    b.Profile.DefaultAccess(),
-		SessionID: sess.SessionID,
-		ThreadID:  sess.ThreadID,
+		RunID:             fmt.Sprintf("%s-%d", scope, time.Now().UnixNano()),
+		Scope:             scope,
+		Prompt:            b.buildPrompt(ctx, batch, attachments),
+		Cwd:               cwd,
+		Model:             sess.Model,
+		CollaborationMode: agent.CollaborationMode(sess.CollaborationMode),
+		Images:            images,
+		Access:            b.Profile.DefaultAccess(),
+		SessionID:         sess.SessionID,
+		ThreadID:          sess.ThreadID,
 	}
 	// Claude AskUserQuestion hook routing (ADR-0008).
 	// Root message id: p2p 话题根（TopicRootID），便于卡片/回复挂在同一话题下。
@@ -381,7 +382,7 @@ func (b *Bridge) runBatch(scope string, batch []*Message) error {
 		b.runsMu.Unlock()
 	}()
 
-	newSess := state.Session{Cwd: cwd, Model: sess.Model}
+	newSess := state.Session{Cwd: cwd, Model: sess.Model, CollaborationMode: sess.CollaborationMode}
 	stopped := false
 	idleFired := false
 	askWasPending := false

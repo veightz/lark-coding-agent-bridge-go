@@ -194,7 +194,7 @@
 
 <ul>
   <li><b>事件入口</b>：<code>internal/lark</code> 基于官方 oapi-sdk-go v3 的 WS 长连接接收消息事件；REST 用于发消息、下载附件；cardkit 用于流式卡片。</li>
-  <li><b>消息中枢</b>：<code>internal/bridge</code> 负责消息归一化、600ms 防抖合并（连续多条消息合并为一次运行）、斜杠命令分流；<code>/model</code> 通过可选的 <code>ModelProvider</code> 按当前工作目录读取模型并用一次性 CardKit 卡片切换当前 scope，<code>/usage</code> 通过 <code>UsageProvider</code> 读取 Codex 账户额度或 OpenCode / Pi 本地活动统计。会话按 <b>scope</b>（<code>chat</code> 或 <code>chat:thread</code>）隔离。</li>
+  <li><b>消息中枢</b>：<code>internal/bridge</code> 负责消息归一化、600ms 防抖合并（连续多条消息合并为一次运行）、斜杠命令分流；<code>/mode</code> 通过可选的 <code>CollaborationModeProvider</code> 切换 Codex Plan/Default 协作模式，<code>/model</code> 通过 <code>ModelProvider</code> 按当前工作目录读取模型并用一次性 CardKit 卡片切换当前 scope，<code>/usage</code> 通过 <code>UsageProvider</code> 读取 Codex 账户额度或 OpenCode / Pi 本地活动统计。会话按 <b>scope</b>（<code>chat</code> 或 <code>chat:thread</code>）隔离。</li>
   <li><b>运行编排</b>：一次运行 = 下载附件 → 构造 prompt → 调 agent 适配器 → 事件流经 <code>card.Reduce</code> 状态机 → 渲染 → 节流推卡 → 会话持久化。</li>
   <li><b>监督</b>：<code>internal/supervisor</code> 独立于 SDK 重连，做 REST 存活探测并强制重建半死连接。</li>
 </ul>
@@ -312,6 +312,7 @@
   <tr><td>会话保持</td><td><code>--resume &lt;sessionId&gt;</code></td><td><code>thread/resume(threadId)</code></td><td>进程内会话 + <code>--session-id</code>；默认 <code>~/.pi/agent</code></td><td>进程内会话 + <code>--resume</code>；默认 <code>~/.omp/agent</code>（无 <code>--session-id</code>）</td><td>磁盘持久化，sessionID 续聊</td></tr>
   <tr><td>模型 / 用量</td><td>—</td><td><code>model/list</code> / 账户额度</td><td><code>get_available_models</code> + <code>set_model</code> / session JSONL 聚合</td><td>同 Pi RPC；session 扫 <code>~/.omp/agent/sessions</code></td><td><code>/config/providers</code> / DB 聚合</td></tr>
   <tr><td>read-only 工具</td><td>plan 模式</td><td>sandbox read-only</td><td><code>--tools read,grep,find,ls</code></td><td><code>--tools read,grep,glob</code></td><td>permission 规则拒绝 edit/bash</td></tr>
+  <tr><td>协作模式</td><td>—</td><td><code>collaborationMode/list</code> + <code>turn/start.collaborationMode</code>（Plan / Default）</td><td>—</td><td>—</td><td>—</td></tr>
 </table>
 <p>各 profile 可配置本机专用的 <code>agent.commandPrefix</code>、<code>shell</code> 与
 <code>shellArgs</code>（ADR-0015）。未配置时直接启动 CLI；配置后由短生命周期 shell
@@ -328,6 +329,11 @@ macOS launchd），则继续检查 <code>~/.volta/bin</code>、<code>~/.local/bi
 15 分钟一次性 nonce 约束回调选项，选择结果写入当前 scope 的
 <code>Session.Model</code>（ADR-0016/0018/0019/0021）。它们也实现 <code>UsageProvider</code>：
 Codex 返回额度窗口，OpenCode / Pi / omp 返回本地 session/token/cache/cost 聚合。</p>
+<p>Codex 还实现 <code>CollaborationModeProvider</code>（ADR-0024）。Bridge 将
+<code>/mode plan|default</code> 写入当前 scope 的 <code>Session.CollaborationMode</code>；Plan
+轮次在 thread start/resume 后通过 <code>collaborationMode/list</code> 读取 CLI 当前预设，补上
+实际 thread model，再传给 <code>turn/start</code>。Default 不发送覆盖字段，保持 app-server
+默认行为；其他 adapter 不把 read-only 权限模式伪装成 Plan 协作模式。</p>
 
 <h3>3.2 claude 协议时序（spawn-per-message）</h3>
 <div class="fig">

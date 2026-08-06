@@ -192,7 +192,8 @@ type RunOptions struct {
     Cwd       string            // 工作目录
     SessionID string            // 非空则续跑（--resume / resume / sessionID）
     Images    []Image           // 图片附件（pi 走 base64 内嵌）
-    Mode      string            // 权限/沙箱模式（claude permission-mode / codex sandbox）
+    Access    AccessLevel       // 权限/沙箱模式（claude permission-mode / codex sandbox）
+    CollaborationMode CollaborationMode // Codex plan/default 协作模式
     // ...
 }
 
@@ -214,6 +215,10 @@ type SessionResetter interface {   // 常驻型适配器实现，支持 /new
 
 type ModelProvider interface {     // 可选：动态模型列表
     ListModels(ctx context.Context, cwd string) ([]ModelInfo, error)
+}
+
+type CollaborationModeProvider interface { // 可选：原生会话协作模式
+    CollaborationModes() []CollaborationModeInfo
 }
 
 type UsageProvider interface {     // 可选：额度窗口或本地活动统计
@@ -273,7 +278,9 @@ func translateClaudeLine(line []byte) []Event
 <pre><code>func (a *CodexAdapter) Run(opts RunOptions) (Run, error)
 // spawn: codex app-server --stdio
 // initialize(experimentalApi=true) → initialized
-// thread/start | thread/resume(threadId) → turn/start(text + localImage)
+// thread/start | thread/resume(threadId)
+// Plan 时 collaborationMode/list → 解析 CLI 预设与实际 thread model
+// → turn/start(text + localImage + collaborationMode?)
 
 type codexAppRun struct {
     cmd/stdin/events/exited
@@ -290,6 +297,7 @@ type codexAppRun struct {
 // turn/completed                        → Event{done|error}
 // Stop                                  → turn/interrupt → grace → SIGTERM/SIGKILL</code></pre>
 <div class="note"><b>权限语义：</b><code>full</code> 使用 danger-full-access + approvalPolicy=never；<code>workspace</code>/<code>read-only</code> 使用对应 sandbox + on-request。卡片 once/always/reject 映射为 accept/acceptForSession/decline，超时与失效均拒绝。</div>
+<div class="note"><b>协作模式：</b><code>/mode plan</code> 将当前 scope 写为 Plan；每轮通过 <code>collaborationMode/list</code> 使用 Codex CLI 自带预设，<code>developer_instructions=null</code> 保留内置 Plan 指令。<code>/mode default</code> 清除 turn 覆盖。该能力与 sandbox/access 独立（ADR-0024）。</div>
 
 <h3>3.3 PiAdapter / Oh My Pi（omp） <span class="file">internal/agent/pi.go</span>（常驻 RPC，每 scope 一进程）</h3>
 <div class="note"><b>CLI 定位：</b>共享 <code>agentCommand</code> 启动层先查进程 <code>PATH</code>，再查 Volta、<code>~/.local/bin</code>、Bun、npm、pnpm、Homebrew 等常见用户级目录。因此 launchd 的精简 <code>PATH</code> 不会导致已安装的 <code>pi</code>/<code>omp</code> 无法启动；显式 binary 路径保持不变。</div>
@@ -440,7 +448,7 @@ func (b *Bridge) HandleMessage(ctx context.Context, msg *Message)
 // 1. 过滤自己（bot）发出的消息，防自循环
 // 2. 快捷回复路由：点击 💬 按钮后用户的下一条私聊 → forwardToGroup 转回原群
 // 3. 群聊门槛：必须 @bot 才受理（单聊直通）
-// 4. 斜杠命令分流：/new /cd /ws /sessions /bind /open /stop /status /model /usage /help → commands.go
+// 4. 斜杠命令分流：/new /cd /ws /sessions /bind /open /stop /status /mode /model /usage /help → commands.go
 // 5. 普通消息 → 投入该 scope 的 PendingQueue（私聊统一话题回复，不自动建群，ADR-0012）
 
 func (b *Bridge) runBatch(ctx, scope string, msgs []*Message)
@@ -529,6 +537,7 @@ func (q *PendingQueue) fire()                // 收拢本批消息 → 触发 ru
   <tr><td><code>/unbind</code></td><td>解除当前聊天的会话绑定</td></tr>
   <tr><td><code>/stop</code></td><td>中断当前 scope 进行中的 run（各 agent 原生中断）</td></tr>
   <tr><td><code>/status</code></td><td>报告 profile、agent、工作目录、会话与运行状态</td></tr>
+  <tr><td><code>/mode plan|default</code></td><td>通过 adapter 的 <code>CollaborationModeProvider</code> 校验并写入当前 scope 的 <code>Session.CollaborationMode</code>；切换时停止当前 run。首版仅 Codex 支持，Plan 预设在下一轮由 app-server 动态解析</td></tr>
   <tr><td><code>/model</code></td><td>通过 adapter 的 <code>ModelProvider</code> 按当前 cwd 动态查询模型，以一次性 CardKit 按钮选择并写入当前 scope 的 <code>Session.Model</code>；Codex 使用 <code>model/list</code>，OpenCode 使用 <code>/config/providers</code>，Pi 使用 <code>get_available_models</code> 并在下一轮 <code>set_model</code></td></tr>
   <tr><td><code>/usage</code></td><td>通过 adapter 的 <code>UsageProvider</code> 查询用量；Codex 展示 app-server 账户额度，OpenCode / Pi 展示本地 session/token/cache/cost 聚合</td></tr>
   <tr><td><code>/help</code></td><td>帮助文本</td></tr>

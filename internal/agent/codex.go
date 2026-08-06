@@ -19,6 +19,21 @@ type CodexAdapter struct {
 func (a *CodexAdapter) ID() string          { return "codex" }
 func (a *CodexAdapter) DisplayName() string { return "Codex CLI" }
 
+func (a *CodexAdapter) CollaborationModes() []CollaborationModeInfo {
+	return []CollaborationModeInfo{
+		{
+			ID:          CollaborationModePlan,
+			DisplayName: "Plan",
+			Description: "先检查上下文、澄清需求并给出方案，不直接实施代码变更",
+		},
+		{
+			ID:          CollaborationModeDefault,
+			DisplayName: "Default",
+			Description: "按正常编码流程规划并执行任务",
+		},
+	}
+}
+
 func (a *CodexAdapter) SetBotIdentity(id BotIdentity) { a.botIdentity = &id }
 
 func codexSandboxMode(access config.AccessLevel) string {
