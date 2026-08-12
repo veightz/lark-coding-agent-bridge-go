@@ -85,6 +85,11 @@ type AgentRuntime struct {
 	// ShellArgs selects how the command string is passed (default: ["-c"]).
 	// Use ["-ic"] only when an interactive shell is required for aliases.
 	ShellArgs []string `json:"shellArgs,omitempty"`
+	// AppServerMode selects the Codex app-server transport. Empty/"stdio"
+	// keeps one process per bridge run; "daemon" connects through
+	// `codex app-server proxy` so an already-loaded turn can be steered.
+	// Other agent adapters ignore this field.
+	AppServerMode string `json:"appServerMode,omitempty"`
 }
 
 // LarkCLIConfig controls how lark-cli obtains its Feishu/Lark identity.

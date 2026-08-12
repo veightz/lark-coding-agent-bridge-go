@@ -228,6 +228,31 @@ func TestCodexApprovalPolicyByAccess(t *testing.T) {
 	}
 }
 
+func TestCodexActiveTurnID(t *testing.T) {
+	thread := map[string]any{
+		"status": map[string]any{"type": "active"},
+		"turns": []any{
+			map[string]any{"id": "turn-old", "status": "completed"},
+			map[string]any{"id": "turn-live", "status": "inProgress"},
+		},
+	}
+	if got := codexThreadStatus(thread); got != "active" {
+		t.Fatalf("status = %q", got)
+	}
+	if got := codexActiveTurnID(thread); got != "turn-live" {
+		t.Fatalf("active turn = %q", got)
+	}
+}
+
+func TestCodexActiveTurnIDAcceptsSnakeCaseStatus(t *testing.T) {
+	thread := map[string]any{"turns": []any{
+		map[string]any{"id": "turn-live", "status": "in_progress"},
+	}}
+	if got := codexActiveTurnID(thread); got != "turn-live" {
+		t.Fatalf("active turn = %q", got)
+	}
+}
+
 func TestCodexAppToolTranslation(t *testing.T) {
 	item := map[string]any{
 		"type":             "commandExecution",

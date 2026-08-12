@@ -276,11 +276,14 @@ func translateClaudeLine(line []byte) []Event
 
 <h3>3.2 CodexAdapter <span class="file">internal/agent/codex.go · codex_appserver.go</span>（ADR-0014）</h3>
 <pre><code>func (a *CodexAdapter) Run(opts RunOptions) (Run, error)
-// spawn: codex app-server --stdio
+// 默认 spawn: codex app-server --stdio
+// agent.appServerMode=daemon: ensure daemon start → codex app-server proxy
 // initialize(experimentalApi=true) → initialized
 // thread/start | thread/resume(threadId)
+// idle → turn/start(text + localImage + collaborationMode?)
 // Plan 时 collaborationMode/list → 解析 CLI 预设与实际 thread model
-// → turn/start(text + localImage + collaborationMode?)
+// shared daemon active → turn/steer(expectedTurnId, text + localImage)
+// 磁盘 active 但 runtime 非 active → 拒绝并发接管
 
 type codexAppRun struct {
     cmd/stdin/events/exited
@@ -448,7 +451,7 @@ func (b *Bridge) HandleMessage(ctx context.Context, msg *Message)
 // 1. 过滤自己（bot）发出的消息，防自循环
 // 2. 快捷回复路由：点击 💬 按钮后用户的下一条私聊 → forwardToGroup 转回原群
 // 3. 群聊门槛：必须 @bot 才受理（单聊直通）
-// 4. 斜杠命令分流：/new /cd /ws /sessions /bind /open /stop /status /mode /model /usage /help → commands.go
+// 4. 斜杠命令分流：/new /cd /ws /sessions /resume /bind /open /stop /status /mode /model /usage /help → commands.go
 // 5. 普通消息 → 投入该 scope 的 PendingQueue（私聊统一话题回复，不自动建群，ADR-0012）
 
 func (b *Bridge) runBatch(ctx, scope string, msgs []*Message)
@@ -531,7 +534,8 @@ func (q *PendingQueue) fire()                // 收拢本批消息 → 触发 ru
   <tr><td><code>/new chat [名称]</code></td><td>显式建群并拉用户入群，私聊收跳转卡片（ADR-0012）</td></tr>
   <tr><td><code>/cd &lt;path&gt;</code></td><td>切换当前 scope 工作目录（写 workspaces.json）</td></tr>
   <tr><td><code>/ws list/save/use/remove</code></td><td>命名工作区管理</td></tr>
-  <tr><td><code>/sessions</code></td><td>列出磁盘上已有的 agent CLI 会话；标注已绑定群（ADR-0005/0007）</td></tr>
+  <tr><td><code>/sessions</code></td><td>列出已有 agent 会话并标注绑定；Codex 额外展示 active/idle 与最近输出（ADR-0005/0007/0022）</td></tr>
+  <tr><td><code>/resume &lt;id&gt;</code></td><td>复用 <code>/bind</code> 的 scope 持久化，在当前飞书话题续接；活动 Codex turn 仅允许 shared daemon steer</td></tr>
   <tr><td><code>/bind &lt;id&gt; [--force]</code></td><td>把当前聊天绑定到指定会话；已绑定他处时拒绝并告知</td></tr>
   <tr><td><code>/open &lt;id&gt;</code></td><td>为会话复用已绑定群或新建群，私聊发跳转卡片（ADR-0007）</td></tr>
   <tr><td><code>/unbind</code></td><td>解除当前聊天的会话绑定</td></tr>

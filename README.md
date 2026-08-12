@@ -24,7 +24,7 @@
 - **消息桥接**：私聊直接发消息，群里 `@bot`，消息转发给本地 agent。
 - **多种 agent**：
   - `claude` — spawn-per-message stream-json（`--resume` 续会话）
-  - `codex` — spawn-per-message `codex app-server --stdio`（双向 JSON-RPC，thread resume 续会话）
+  - `codex` — 默认 spawn-per-message `codex app-server --stdio`；可选 shared daemon + proxy（双向 JSON-RPC，thread resume / active turn steer）
   - `pi` — **常驻 RPC 进程**（每 scope 一个 `pi --mode rpc`，原生 JSONL 协议，`abort` 优雅中断）
   - `omp` — **Oh My Pi**，常驻 RPC（复用 Pi 事件协议；`--resume` 续会话、默认 `~/.omp/agent`，ADR-0021）
   - `opencode` — **常驻 HTTP server**（`opencode serve`，REST + 按工作目录划分的 SSE 事件流，`abort` API 中断，`/global/health` 存活探测）
@@ -33,6 +33,7 @@
   - `cursor` — **常驻 ACP 进程**（每 scope 一个 `cursor-agent acp` 或已校验的 Cursor `agent acp`，`session/prompt` + `cursor/ask_question`，ADR-0022）
 - **流式卡片**：回复实时渲染在 CardKit 2.0 流式卡片上（文本、思考、工具调用折叠面板、⏹ 终止按钮）。
 - **会话保持**：每个私聊 / 群 / 话题各自维护独立会话；pi/omp/opencode 会话落盘，bridge 重启后自动续聊。
+- **外部 Codex 会话接管**（ADR-0025）：`/sessions` 展示 CLI/桌面会话的运行态与最近输出；`/resume` 在飞书话题续接。shared daemon 模式可 steer 活动 turn，独立进程仍运行时拒绝并发接管。
 - **排队与合并**：短时间连续消息自动合并；运行期间发来的消息排队到下一轮；`/new`、`/cd`、`/stop` 可随时打断。
 - **三层健壮性**：SDK 自动重连 + supervisor 存活探测强制重建（半死连接自愈）+ run 级 idle 看门狗（默认 10 分钟无事件自动终止并标注卡片）。
 - **多工作区**：`/cd` 切换目录，`/ws` 保存 / 复用命名工作区。
@@ -48,7 +49,7 @@
 
 ## 与原版的差异
 
-本复刻覆盖核心链路，以下原版功能**尚未实现**：后台守护进程服务管理、云文档评论、COT 过程消息、`/resume`、`/config` 交互卡片、`/doctor`、卡片回调签名、`/invite all group` 批量拉群、secrets 加密存储（App Secret 明文存于 `config.json`，文件权限 0600）。**访问控制**（owner + `/invite`/`/remove`）已实现（ADR-0013）。Codex 的结构化反问、命令/文件修改确认与额外权限申请已通过 app-server 接管（ADR-0014）。
+本复刻覆盖核心链路，以下原版功能**尚未实现**：后台守护进程服务管理、云文档评论、COT 过程消息、`/config` 交互卡片、`/doctor`、卡片回调签名、`/invite all group` 批量拉群、secrets 加密存储（App Secret 明文存于 `config.json`，文件权限 0600）。**访问控制**（owner + `/invite`/`/remove`）已实现（ADR-0013）。Codex 的结构化反问、命令/文件修改确认与额外权限申请已通过 app-server 接管（ADR-0014）。
 
 设计与实现文档见 [`docs/design.html`](docs/design.html)（技术设计，含架构/时序/状态机图）与 [`docs/implementation.html`](docs/implementation.html)（关键结构与方法）。
 
@@ -131,7 +132,8 @@ pi list
 | `/new`, `/reset` | 清空当前会话（常驻型 agent 同时重置其进程/会话） |
 | `/cd <path>` | 切换工作目录（会话重置） |
 | `/ws list` / `save <name>` / `use <name>` / `remove <name>` | 命名工作区管理 |
-| `/sessions` | 列出命令行里已有的 agent 会话（含绑定群标记） |
+| `/sessions` | 列出已有 agent 会话；Codex 同时展示运行态和最近输出 |
+| `/resume <序号或id前缀>` | 在当前飞书话题续接已有会话（Codex 活动 turn 需 shared daemon） |
 | `/bind <序号或id前缀> [--force]` | 把当前聊天绑定到该会话（去重，已绑定会提示所在聊天） |
 | `/open <序号或id前缀>` | 为该会话复用已有群或新建群，私聊下发跳转按钮（已绑定则不新建） |
 | `/unbind` | 解除当前聊天的会话绑定 |
@@ -215,7 +217,8 @@ Bridge 时 `--profile <name>` 对应的 `profiles.<name>`，在其中加入 `age
       "agentKind": "codex",
       "agent": {
         "commandPrefix": "source ~/.proxy-env && proxy_on",
-        "shell": "/bin/zsh"
+        "shell": "/bin/zsh",
+        "appServerMode": "daemon"
       }
     }
   }
@@ -250,6 +253,7 @@ Bridge 时 `--profile <name>` 对应的 `profiles.<name>`，在其中加入 `age
 | `agent.commandPrefix` | 空 | 启动 agent 前执行的 shell 命令；为空时不启动 shell |
 | `agent.shell` | `/bin/sh` | 执行前置命令的 shell |
 | `agent.shellArgs` | `["-c"]` | shell 参数；alias 场景可使用 `["-ic"]` |
+| `agent.appServerMode` | `stdio` | Codex 专用：设为 `daemon` 后通过 shared app-server proxy 连接，支持活动 turn steer |
 
 注意事项：
 
@@ -257,6 +261,7 @@ Bridge 时 `--profile <name>` 对应的 `profiles.<name>`，在其中加入 `age
 - 前置命令成功后，shell 会用 `exec` 替换为真实 agent CLI。
 - agent binary 和参数通过位置参数传递，不会被 shell 二次解析。
 - 配置作用于该 profile 所选 agent 的 CLI 启动路径；Codex/OpenCode 包括正常对话、`/model` 和 `/usage`，Pi 包括正常对话与 `/model`（Pi `/usage` 直接读取本地 session JSONL，不启动 CLI）。
+- Codex profile 可设置 `agent.appServerMode: "daemon"`：bridge 会启动/复用本机 app-server daemon，并通过 `app-server proxy` 连接。只有同一 daemon 里 loaded 的活动 turn 才能被 `turn/steer`；默认 `stdio` 不会强行接管独立 CLI/桌面进程。
 - 该设置同样支持 Claude、Pi、OpenCode、Grok 和 Kimi。
 - 交互式 shell 会加载用户配置，可能产生额外输出或副作用，因此优先使用可执行 wrapper
   或显式 `source`。

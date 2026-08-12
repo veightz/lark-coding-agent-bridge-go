@@ -84,6 +84,9 @@ func TestScanCodexSessions(t *testing.T) {
 	writeLines(t, filepath.Join(home, "sessions", "2026", "01", "01", "rollout-x.jsonl"),
 		`{"type":"session_meta","payload":{"id":"thread-1","cwd":"/Users/test/proj"}}`,
 		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"codex 任务"}]}}`,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}`,
+		`{"type":"event_msg","payload":{"type":"agent_message","message":"正在检查测试"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","last_agent_message":"测试已经通过"}}`,
 	)
 	sessions, err := scanCodexSessions(10)
 	if err != nil {
@@ -95,6 +98,23 @@ func TestScanCodexSessions(t *testing.T) {
 	s := sessions[0]
 	if s.ID != "thread-1" || s.Cwd != "/Users/test/proj" || s.Preview != "codex 任务" {
 		t.Errorf("session = %+v", s)
+	}
+	if s.Status != SessionStatusIdle || s.LastOutput != "测试已经通过" {
+		t.Errorf("status snapshot = %+v", s)
+	}
+}
+
+func TestScanCodexSessionTailActive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeLines(t, path,
+		`{"type":"session_meta","payload":{"id":"thread-active"}}`,
+		`{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"上一轮完成"}}`,
+		`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}`,
+		`{"type":"event_msg","payload":{"type":"agent_message","message":"正在运行 go test"}}`,
+	)
+	status, output := scanCodexSessionTail(path)
+	if status != SessionStatusActive || output != "正在运行 go test" {
+		t.Fatalf("status=%q output=%q", status, output)
 	}
 }
 

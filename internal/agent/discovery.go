@@ -4,7 +4,9 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,12 +18,24 @@ import (
 
 // ExternalSession describes one discoverable agent session.
 type ExternalSession struct {
-	ID        string
-	Cwd       string
-	Preview   string
-	UpdatedAt time.Time
-	Agent     config.AgentKind
+	ID         string
+	Cwd        string
+	Preview    string
+	LastOutput string
+	Status     ExternalSessionStatus
+	UpdatedAt  time.Time
+	Agent      config.AgentKind
 }
+
+// ExternalSessionStatus is a best-effort view of the latest persisted turn.
+// Only adapters whose local history exposes lifecycle events populate it.
+type ExternalSessionStatus string
+
+const (
+	SessionStatusUnknown ExternalSessionStatus = ""
+	SessionStatusActive  ExternalSessionStatus = "active"
+	SessionStatusIdle    ExternalSessionStatus = "idle"
+)
 
 // ShortID returns the id prefix used for display and /bind matching.
 func (s ExternalSession) ShortID() string {
@@ -281,10 +295,103 @@ func scanCodexSessions(limit int) ([]ExternalSession, error) {
 			return sess.ID == "" || sess.Preview == ""
 		})
 		if sess.ID != "" {
+			status, lastOutput := scanCodexSessionTail(f.path)
+			sess.Status = status
+			sess.LastOutput = lastOutput
 			out = append(out, sess)
 		}
 	}
 	return out, nil
+}
+
+const codexTailBytes = 512 * 1024
+
+// scanCodexSessionTail reads only the newest part of a rollout. Tool output
+// entries can be very large, so the first (possibly truncated) line is simply
+// ignored. Walking backwards finds both the latest lifecycle marker and the
+// latest user-visible agent message without loading the full history.
+func scanCodexSessionTail(path string) (ExternalSessionStatus, string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return SessionStatusUnknown, ""
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return SessionStatusUnknown, ""
+	}
+	start := info.Size() - codexTailBytes
+	if start < 0 {
+		start = 0
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return SessionStatusUnknown, ""
+	}
+	data, err := io.ReadAll(io.LimitReader(f, codexTailBytes))
+	if err != nil {
+		return SessionStatusUnknown, ""
+	}
+	lines := bytes.Split(data, []byte{'\n'})
+	status := SessionStatusUnknown
+	lastOutput := ""
+	for i := len(lines) - 1; i >= 0 && (status == SessionStatusUnknown || lastOutput == ""); i-- {
+		var row map[string]any
+		if json.Unmarshal(lines[i], &row) != nil {
+			continue
+		}
+		payload := mapField(row, "payload")
+		switch stringField(row, "type") {
+		case "event_msg":
+			switch stringField(payload, "type") {
+			case "task_complete":
+				if status == SessionStatusUnknown {
+					status = SessionStatusIdle
+				}
+				if lastOutput == "" {
+					lastOutput = clamp(stringField(payload, "last_agent_message"), 120)
+				}
+			case "task_started":
+				if status == SessionStatusUnknown {
+					status = SessionStatusActive
+				}
+			case "agent_message":
+				if lastOutput == "" {
+					lastOutput = clamp(stringField(payload, "message"), 120)
+				}
+			}
+		case "response_item":
+			if lastOutput == "" && stringField(payload, "type") == "message" && stringField(payload, "role") == "assistant" {
+				lastOutput = clamp(extractCodexText(payload["content"]), 120)
+			}
+		}
+	}
+	return status, lastOutput
+}
+
+// codexSessionStatus returns the persisted status for one thread. Active
+// threads are necessarily among the newest rollouts, but this lookup still
+// scans all metadata files so a custom CODEX_HOME remains correct.
+func codexSessionStatus(threadID string) ExternalSessionStatus {
+	if threadID == "" {
+		return SessionStatusUnknown
+	}
+	files, _ := collectJSONL(filepath.Join(codexHome(), "sessions"), 5)
+	for _, f := range files {
+		matched := false
+		scanJSONLLines(f.path, 8, func(m map[string]any) bool {
+			if m["type"] != "session_meta" {
+				return true
+			}
+			payload, _ := m["payload"].(map[string]any)
+			matched = stringField(payload, "id", "session_id") == threadID
+			return false
+		})
+		if matched {
+			status, _ := scanCodexSessionTail(f.path)
+			return status
+		}
+	}
+	return SessionStatusUnknown
 }
 
 func extractCodexText(content any) string {

@@ -40,14 +40,33 @@ func (b *Bridge) handleSessions(msg *Message, reply func(string)) {
 				bound = " 🔗" + b.chatLabel(bind.ChatID)
 			}
 		}
-		fmt.Fprintf(&sb, "%d. `%s` %s\n    %s · %s%s\n",
-			i+1, s.ShortID(), orEmpty(s.Preview, "（无摘要）"),
+		status := externalSessionStatusLabel(s.Status)
+		if status != "" {
+			status += " "
+		}
+		fmt.Fprintf(&sb, "%d. %s`%s` %s\n    %s · %s%s\n",
+			i+1, status, s.ShortID(), orEmpty(s.Preview, "（无摘要）"),
 			orEmpty(s.Cwd, "未知目录"), s.UpdatedAt.Format("01-02 15:04"), bound)
+		if s.LastOutput != "" {
+			fmt.Fprintf(&sb, "    最近输出：%s\n", s.LastOutput)
+		}
 	}
-	sb.WriteString("\n绑定到当前聊天：`/bind <序号或id前缀>`\n")
+	sb.WriteString("\n在当前话题续接：`/resume <序号或id前缀>`\n")
+	sb.WriteString("绑定到当前聊天：`/bind <序号或id前缀>`\n")
 	sb.WriteString("在群里续聊（复用/建群）：`/open <序号或id前缀>`\n")
 	sb.WriteString("解绑：`/unbind`")
 	reply(sb.String())
+}
+
+func externalSessionStatusLabel(status agent.ExternalSessionStatus) string {
+	switch status {
+	case agent.SessionStatusActive:
+		return "🟡 运行中"
+	case agent.SessionStatusIdle:
+		return "🟢 已完成"
+	default:
+		return ""
+	}
 }
 
 // handleBind binds the current chat scope to a discovered session.
@@ -118,8 +137,12 @@ func (b *Bridge) handleBind(msg *Message, args []string, reply func(string)) {
 	b.Bindings.Set(key, state.Binding{Scope: scope, ChatID: msg.ChatID, ChatType: chatType})
 	_ = b.Bindings.Flush()
 
-	reply(fmt.Sprintf("✅ 已绑定会话 `%s`\n目录：%s\n摘要：%s\n之后在这个聊天里发消息就会续接该会话。/unbind 可解绑。",
-		match.ShortID(), orEmpty(match.Cwd, "未知"), orEmpty(match.Preview, "（无摘要）")))
+	note := "之后直接回复本条消息所在的话题，就会续接该会话。/unbind 可解绑。"
+	if match.Status == agent.SessionStatusActive {
+		note = "该会话当前仍在运行。若原客户端没有接入 Codex shared daemon，bridge 会拒绝并发接管；可等待回合完成后在本话题回复。"
+	}
+	reply(fmt.Sprintf("✅ 已绑定会话 `%s`\n目录：%s\n摘要：%s\n%s",
+		match.ShortID(), orEmpty(match.Cwd, "未知"), orEmpty(match.Preview, "（无摘要）"), note))
 }
 
 // handleOpen reuses or creates a group for a discovered session (ADR-0007).

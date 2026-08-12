@@ -303,13 +303,13 @@
 
 <table>
   <tr><th>维度</th><th>claude</th><th>codex</th><th>pi</th><th>omp（Oh My Pi）</th><th>opencode</th></tr>
-  <tr><td>进程模型</td><td>spawn-per-message</td><td>spawn-per-message</td><td>常驻 RPC（每 scope）</td><td>常驻 RPC（每 scope，复用 Pi 事件协议）</td><td>常驻 HTTP server（每 profile）</td></tr>
-  <tr><td>启动命令</td><td><code>claude -p --output-format stream-json --verbose --permission-mode &lt;mode&gt; --append-system-prompt-file &lt;tmp&gt;</code></td><td><code>codex app-server --stdio</code></td><td><code>pi --mode rpc --append-system-prompt &lt;prompt&gt; [--session-id &lt;id&gt;]</code></td><td><code>omp --mode rpc --append-system-prompt &lt;prompt&gt; [--resume &lt;id&gt;]</code></td><td><code>opencode serve --port &lt;port&gt; --hostname 127.0.0.1</code></td></tr>
+  <tr><td>进程模型</td><td>spawn-per-message</td><td>默认 spawn-per-message；可选 shared daemon proxy</td><td>常驻 RPC（每 scope）</td><td>常驻 RPC（每 scope，复用 Pi 事件协议）</td><td>常驻 HTTP server（每 profile）</td></tr>
+  <tr><td>启动命令</td><td><code>claude -p --output-format stream-json --verbose --permission-mode &lt;mode&gt; --append-system-prompt-file &lt;tmp&gt;</code></td><td><code>codex app-server --stdio</code> 或 <code>codex app-server proxy</code></td><td><code>pi --mode rpc --append-system-prompt &lt;prompt&gt; [--session-id &lt;id&gt;]</code></td><td><code>omp --mode rpc --append-system-prompt &lt;prompt&gt; [--resume &lt;id&gt;]</code></td><td><code>opencode serve --port &lt;port&gt; --hostname 127.0.0.1</code></td></tr>
   <tr><td>输入通道</td><td>stdin（prompt）</td><td>stdin JSON-RPC（initialize / thread / turn / approval response）</td><td>stdin JSONL 命令</td><td>stdin JSONL 命令</td><td>REST（prompt_async）</td></tr>
   <tr><td>输出通道</td><td>stdout 逐行 stream-json</td><td>stdout JSON-RPC 通知与 server request</td><td>stdout 事件流</td><td>stdout 事件流（同 Pi 子集）</td><td>SSE 事件流（按工作目录划分）</td></tr>
   <tr><td>turn 结束信号</td><td><code>result</code> 消息</td><td><code>turn/completed</code></td><td><code>agent_settled</code></td><td><code>agent_end</code>（omp 不发 <code>agent_settled</code>；<code>turn_end</code> 仅轮次边界，不关 Run）</td><td><code>session.idle</code> / <code>session.error</code></td></tr>
   <tr><td>中断方式</td><td>SIGTERM → 5s → SIGKILL</td><td><code>turn/interrupt</code> → grace → SIGTERM/SIGKILL</td><td><code>abort</code> 命令</td><td><code>abort</code> 命令</td><td><code>POST /session/{id}/abort</code></td></tr>
-  <tr><td>会话保持</td><td><code>--resume &lt;sessionId&gt;</code></td><td><code>thread/resume(threadId)</code></td><td>进程内会话 + <code>--session-id</code>；默认 <code>~/.pi/agent</code></td><td>进程内会话 + <code>--resume</code>；默认 <code>~/.omp/agent</code>（无 <code>--session-id</code>）</td><td>磁盘持久化，sessionID 续聊</td></tr>
+  <tr><td>会话保持</td><td><code>--resume &lt;sessionId&gt;</code></td><td><code>thread/resume</code>；shared active 用 <code>turn/steer</code></td><td>进程内会话 + <code>--session-id</code>；默认 <code>~/.pi/agent</code></td><td>进程内会话 + <code>--resume</code>；默认 <code>~/.omp/agent</code>（无 <code>--session-id</code>）</td><td>磁盘持久化，sessionID 续聊</td></tr>
   <tr><td>模型 / 用量</td><td>—</td><td><code>model/list</code> / 账户额度</td><td><code>get_available_models</code> + <code>set_model</code> / session JSONL 聚合</td><td>同 Pi RPC；session 扫 <code>~/.omp/agent/sessions</code></td><td><code>/config/providers</code> / DB 聚合</td></tr>
   <tr><td>read-only 工具</td><td>plan 模式</td><td>sandbox read-only</td><td><code>--tools read,grep,find,ls</code></td><td><code>--tools read,grep,glob</code></td><td>permission 规则拒绝 edit/bash</td></tr>
   <tr><td>协作模式</td><td>—</td><td><code>collaborationMode/list</code> + <code>turn/start.collaborationMode</code>（Plan / Default）</td><td>—</td><td>—</td><td>—</td></tr>
@@ -318,6 +318,10 @@
 <code>shellArgs</code>（ADR-0015）。未配置时直接启动 CLI；配置后由短生命周期 shell
 先执行前置命令，成功后以 <code>exec "$@"</code> 替换为原 agent 进程。binary 与 argv
 通过位置参数传入，不经过 shell 拼接；因此代理环境只影响 agent 子进程及其后代。</p>
+<p>Codex 还可显式配置 <code>agent.appServerMode="daemon"</code>（ADR-0025）：bridge
+先确保 managed daemon 存活，再用 proxy 连接共享 runtime。只有 runtime 返回 active
+且可取得 in-progress turn id 时才执行 <code>turn/steer</code>；磁盘 active 但 runtime
+不可见时拒绝并发接管。</p>
 <p>启动层先按进程 <code>PATH</code> 解析 CLI；若服务管理器提供的是精简环境（例如
 macOS launchd），则继续检查 <code>~/.volta/bin</code>、<code>~/.local/bin</code>、
 <code>~/.bun/bin</code>、<code>~/.npm-global/bin</code>、<code>~/Library/pnpm</code>、
@@ -1016,7 +1020,7 @@ Codex 返回额度窗口，OpenCode / Pi / omp 返回本地 session/token/cache/
 <div class="note"><b>设计要点：</b>升级发生在去抖队列<b>之前</b>——把消息 ChatID 改写为新群后再入队，连发消息经 600ms 去抖自然合并成同一批 run；跳转卡片用 <code>https://applink.feishu.cn/client/chat/open?openChatId=&lt;id&gt;</code>，无需分享群链接、一键直达；快捷回复（quick_reply）的私聊提示改用 <code>receive_id_type=open_id</code> 发送，修复了把 open_id 当 chat_id 导致的 230001 invalid receive_id。</div>
 
 <h2 id="s11"><span class="no">11</span>群↔会话关联与 /open 复用（ADR-0007）</h2>
-<p>群里跑出的 agent 会话需要<strong>可被私聊找回</strong>：用户私聊 bot → <code>/sessions</code> 看最近会话 → <code>/open &lt;序号&gt;</code> 进入该会话对应的群。若 session 已绑定过群，则<strong>复用</strong>并下发跳转按钮，绝不重复建群。</p>
+<p>群里跑出的 agent 会话需要<strong>可被私聊找回</strong>：用户私聊 bot → <code>/sessions</code> 看最近会话 → <code>/resume &lt;序号&gt;</code> 在当前话题续接，或 <code>/open &lt;序号&gt;</code> 进入该会话对应的群。Codex 列表额外展示 JSONL 尾部推导的运行态与最近输出。若 session 已绑定过群，则<strong>复用</strong>并下发跳转按钮，绝不重复建群。</p>
 
 <h3>11.1 双向存储</h3>
 <ul>

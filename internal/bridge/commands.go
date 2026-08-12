@@ -28,6 +28,7 @@ const helpText = `**可用命令**
 - /ws use <name> — 切换到命名工作区
 - /ws remove <name> — 删除命名工作区
 - /sessions — 列出命令行里已有的 agent 会话
+- /resume <序号或id前缀> — 在当前飞书话题续接已有会话
 - /bind <序号或id前缀> [--force] — 把当前聊天绑定到该会话
 - /open <序号或id前缀> — 为该会话复用/新建群并给跳转按钮（私聊常用）
 - /unbind — 解除当前聊天的会话绑定
@@ -105,6 +106,9 @@ func (b *Bridge) handleCommand(msg *Message, content string) {
 		b.handleSessions(msg, reply)
 
 	case "/bind":
+		b.handleBind(msg, args, reply)
+
+	case "/resume":
 		b.handleBind(msg, args, reply)
 
 	case "/open":

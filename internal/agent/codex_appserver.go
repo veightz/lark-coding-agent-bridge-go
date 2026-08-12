@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,11 +33,13 @@ type codexAppRun struct {
 	stopped bool
 	ended   bool
 
-	threadID string
-	turnID   string
-	model    string
-	access   configAccess
-	grace    time.Duration
+	threadID   string
+	turnID     string
+	model      string
+	access     configAccess
+	grace      time.Duration
+	shared     bool
+	diskActive bool
 }
 
 // Kept local so the protocol implementation does not import config in every
@@ -90,7 +93,19 @@ func startCodexAppServer(binary, prompt string, opts RunOptions, env []string, r
 	if binary == "" {
 		binary = "codex"
 	}
+	shared := runtime.AppServerMode == "daemon"
+	if runtime.AppServerMode != "" && runtime.AppServerMode != "stdio" && !shared {
+		return nil, fmt.Errorf("unsupported Codex appServerMode %q (want stdio or daemon)", runtime.AppServerMode)
+	}
+	if shared {
+		if err := ensureCodexAppServerDaemon(binary, opts, env, runtime); err != nil {
+			return nil, err
+		}
+	}
 	args := []string{"app-server", "--stdio"}
+	if shared {
+		args = []string{"app-server", "proxy"}
+	}
 	args = append(args, opts.ExtraArgs...)
 	cmd := agentCommand(runtime, binary, args...)
 	cmd.Dir = opts.Cwd
@@ -117,14 +132,16 @@ func startCodexAppServer(binary, prompt string, opts RunOptions, env []string, r
 		grace = 5 * time.Second
 	}
 	r := &codexAppRun{
-		cmd:     cmd,
-		stdin:   stdin,
-		events:  make(chan Event, 256),
-		exited:  make(chan struct{}),
-		pending: map[string]chan codexRPCResponse{},
-		model:   opts.Model,
-		access:  configAccess(opts.Access),
-		grace:   grace,
+		cmd:        cmd,
+		stdin:      stdin,
+		events:     make(chan Event, 256),
+		exited:     make(chan struct{}),
+		pending:    map[string]chan codexRPCResponse{},
+		model:      opts.Model,
+		access:     configAccess(opts.Access),
+		grace:      grace,
+		shared:     shared,
+		diskActive: codexSessionStatus(opts.ThreadID) == SessionStatusActive,
 	}
 	if r.access == "" {
 		r.access = codexAccessFull
@@ -148,6 +165,28 @@ func startCodexAppServer(binary, prompt string, opts RunOptions, env []string, r
 		return nil, err
 	}
 	return r, nil
+}
+
+func ensureCodexAppServerDaemon(binary string, opts RunOptions, env []string, runtime config.AgentRuntime) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	args := []string{"app-server", "daemon", "start"}
+	args = append(args, opts.ExtraArgs...)
+	cmd := agentCommandContext(ctx, runtime, binary, args...)
+	cmd.Dir = opts.Cwd
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(string(out))
+	if len(detail) > 500 {
+		detail = detail[:500]
+	}
+	if detail != "" {
+		return fmt.Errorf("start Codex app-server daemon: %w: %s", err, detail)
+	}
+	return fmt.Errorf("start Codex app-server daemon: %w", err)
 }
 
 func (r *codexAppRun) initialize(prompt string, opts RunOptions) error {
@@ -203,6 +242,43 @@ func (r *codexAppRun) initialize(prompt string, opts RunOptions) error {
 	input := []map[string]any{{"type": "text", "text": prompt, "text_elements": []any{}}}
 	for _, path := range opts.Images {
 		input = append(input, map[string]any{"type": "localImage", "path": path})
+	}
+	runtimeStatus := codexThreadStatus(thread)
+	if runtimeStatus == "active" {
+		if !r.shared {
+			return fmt.Errorf("Codex 会话仍在其他客户端运行；请等待当前回合结束，或把 profile 的 agent.appServerMode 设为 daemon 后重试")
+		}
+		turnID := codexActiveTurnID(thread)
+		if turnID == "" {
+			readResp, readErr := r.request("thread/read", map[string]any{
+				"threadId":     r.threadID,
+				"includeTurns": true,
+			}, 15*time.Second)
+			if readErr == nil {
+				turnID = codexActiveTurnID(mapField(readResp, "thread"))
+			}
+		}
+		if turnID == "" {
+			return fmt.Errorf("Codex shared daemon 报告会话 active，但未返回可 steer 的 turn id")
+		}
+		steerResp, steerErr := r.request("turn/steer", map[string]any{
+			"threadId":       r.threadID,
+			"expectedTurnId": turnID,
+			"input":          input,
+		}, 30*time.Second)
+		if steerErr != nil {
+			return fmt.Errorf("steer Codex turn: %w", steerErr)
+		}
+		r.turnID = stringField(steerResp, "turnId")
+		if r.turnID == "" {
+			r.turnID = turnID
+		}
+		return nil
+	}
+	// JSONL 显示 active、但当前 app-server runtime 看不到活动 turn，说明
+	// 原会话仍属于另一个独立 CLI/桌面进程。此时启动新 turn 会并发写同一 thread。
+	if r.diskActive {
+		return fmt.Errorf("Codex 会话仍在独立客户端运行，无法安全接管；请等待当前回合结束，或让原客户端接入同一个 shared daemon")
 	}
 	turnParams := map[string]any{
 		"threadId": r.threadID,
@@ -269,6 +345,23 @@ func (r *codexAppRun) resolveCollaborationMode(mode CollaborationMode) (map[stri
 		}, nil
 	}
 	return nil, fmt.Errorf("当前 Codex CLI 不支持 Plan 协作模式，请升级后重试")
+}
+
+func codexThreadStatus(thread map[string]any) string {
+	status := mapField(thread, "status")
+	return strings.ToLower(stringField(status, "type"))
+}
+
+func codexActiveTurnID(thread map[string]any) string {
+	turns := anySlice(thread["turns"])
+	for i := len(turns) - 1; i >= 0; i-- {
+		turn, _ := turns[i].(map[string]any)
+		status := strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(stringField(turn, "status")))
+		if status == "inprogress" {
+			return stringField(turn, "id")
+		}
+	}
+	return ""
 }
 
 func codexApprovalPolicy(access configAccess) string {
