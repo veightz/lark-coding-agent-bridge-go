@@ -545,9 +545,9 @@ func (s *RunState) TextContent() string          // 提取纯文本（用于终�
 <pre><code>func Render(state *RunState) map[string]any // RunState → CardKit 2.0 卡片 JSON
 // · thinking 块  → 折叠面板
 // · text 块      → markdown 元素
-// · tool_group   → 折叠面板；groupBlocks 策略：工具调用 ≥3 个时
-//                  折叠历史、只保留最新一个展开
-// · 运行中 footer：状态文本 + ⏹ 终止按钮（callback cmd=stop）
+// · tool_group   → detail 默认折叠（最新工具 / Task / Agent 也不强制展开）；
+//                  工具调用 ≥3 个时合并折叠历史，最新一个保留独立折叠面板
+// · 运行中 footer：当前动作 + 每秒 tick 的已运行时间 + ⏹ 终止按钮
 // · 终态 footer： 中断 / 超时 / 错误标注 + usage
 
 func MaskEmails(s string) string // 邮箱脱敏：飞书租户审计会拒绝含原始邮箱的卡片</code></pre>
