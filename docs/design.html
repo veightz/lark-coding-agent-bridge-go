@@ -684,8 +684,8 @@ Codex 返回额度窗口，OpenCode 与 Pi 返回本地 session/token/cache/cost
     <ul>
       <li>思考内容 → 折叠面板（thinking）；</li>
       <li>正文 → markdown 文本块；</li>
-      <li>工具调用 → 折叠面板，<b>≥3 个时折叠历史、只保留最新一个展开</b>；</li>
-      <li>运行中 footer 显示状态 + <b>⏹ 终止按钮</b>（callback <code>cmd=stop</code>）；</li>
+      <li>工具调用 → detail 默认折叠（含最新工具与子 agent）；<b>≥3 个时另外合并折叠历史调用</b>，避免 bash 输出随每秒整卡刷新反复改变页面高度；</li>
+      <li>运行中 footer 以稳定单行显示“当前动作 + 已运行时间”，耗时仍每秒 tick；同时保留 <b>⏹ 终止按钮</b>（callback <code>cmd=stop</code>）；</li>
       <li>终态标注：中断 / 超时 / 错误。</li>
     </ul>
   </li>

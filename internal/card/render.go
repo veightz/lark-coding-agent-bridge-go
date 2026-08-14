@@ -76,9 +76,6 @@ func Render(state *RunState, opts RenderOptions) map[string]any {
 		if state.Stats.Cwd != "" {
 			elements = append(elements, noteMd("📂 "+state.Stats.Cwd))
 		}
-		if state.Stats.DurationMs > 0 {
-			elements = append(elements, noteMd("⏱ "+formatDuration(state.Stats.DurationMs)))
-		}
 		// Show session id and model as soon as known — don't wait for the run to finish.
 		if ref := state.Stats.SessionRef(); ref != "" {
 			elements = append(elements, noteMd("🆔 "+ref))
@@ -158,9 +155,9 @@ func renderToolGroup(tools []*ToolEntry, finalized bool) []map[string]any {
 	if finalized {
 		return []map[string]any{collapsedToolSummary(tools, true)}
 	}
-	// Running: collapse prior tools, keep the latest visible.
+	// 最新工具也保持折叠，避免心跳整卡刷新时 bash 输出把卡片越撑越高。
 	out := []map[string]any{collapsedToolSummary(tools[:len(tools)-1], false)}
-	out = append(out, toolPanel(tools[len(tools)-1], true))
+	out = append(out, toolPanel(tools[len(tools)-1], false))
 	return out
 }
 
@@ -168,11 +165,6 @@ func toolPanel(tool *ToolEntry, expanded bool) map[string]any {
 	border := "grey"
 	if tool.Status == ToolError {
 		border = "red"
-	}
-	// Subagent (Task/Agent) calls are always expanded so the user can
-	// see what the subagent actually did.
-	if tool.Name == "Task" || tool.Name == "Agent" {
-		expanded = true
 	}
 	body := toolBodyMd(tool)
 	if body == "" {
@@ -297,6 +289,10 @@ func footerStatus(status FooterStatus, state *RunState) map[string]any {
 				text = "🧰 " + tool.Name
 			}
 		}
+	}
+	// 把每秒 tick 的耗时放在同一行，避免再插一个会跳动的元素。
+	if state.Stats.DurationMs > 0 {
+		text += " · ⏱ " + formatDuration(state.Stats.DurationMs)
 	}
 	return noteMd(text)
 }
