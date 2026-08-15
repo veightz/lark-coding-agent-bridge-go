@@ -146,6 +146,27 @@
 <div class="cap">图 1 · 包依赖：bridge 居中编排，card 消费 agent 的统一事件流，lark/supervisor 提供通道与监督</div>
 </div>
 
+<h3>1.1 internal/larkcli —— 飞书主体协调（ADR-0023）</h3>
+<pre><code>func Environment(paths config.Paths, profileName string, profile *config.Profile) map[string]string
+// 固定 LARK_CHANNEL / HOME / PROFILE / profile 私有 LARKSUITE_CLI_CONFIG_DIR；
+// sharedApp=true 时额外注入 LARK_CHANNEL_CONFIG → 无密钥投影文件
+
+func EnsureSharedBinding(ctx context.Context, paths config.Paths,
+    profileName string, profile *config.Profile) (synced bool, err error)
+// 1. sharedApp=false → 不接管；lark-cli 未安装 → 可选能力，跳过
+// 2. WriteJSONAtomic(lark-cli-source.json)：App ID/tenant + file provider JSON Pointer
+//    指向根 config.json 的 /profiles/&lt;name&gt;/app/appSecret，不复制 Secret
+// 3. lark-cli-sync.json 源指纹 + lark-cli/lark-channel/config.json 有效绑定均匹配 → 跳过
+// 4. 要同步时要求 lark-cli &gt;= 1.0.43，执行 config bind --source lark-channel
+// 5. 默认 --identity bot-only；显式 user-default 时追加 --force
+// 6. 校验 stdout 的 ok/app_id/identity 后原子写同步标记；任一步不一致则启动失败
+
+type LarkCLIConfig struct {
+    SharedApp *bool  // nil/true=统一（默认）；false=操作者独立维护
+    Identity  string // bot-only（默认）| user-default
+}</code></pre>
+<div class="note"><b>状态边界：</b><code>lark-cli-source.json</code> 和 <code>lark-cli-sync.json</code> 都不含明文 Secret；官方 lark-cli workspace 负责 keychain 与用户 Token。同步只在源或有效绑定变化时发生，正常重启不会覆盖 OAuth 用户列表。</div>
+
 <h2 id="s2"><span class="no">2</span>internal/agent —— 适配层核心</h2>
 
 <h3>2.1 统一抽象 <span class="file">internal/agent/types.go</span></h3>

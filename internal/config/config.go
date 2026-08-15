@@ -87,11 +87,23 @@ type AgentRuntime struct {
 	ShellArgs []string `json:"shellArgs,omitempty"`
 }
 
+// LarkCLIConfig controls how lark-cli obtains its Feishu/Lark identity.
+// The zero value deliberately means "share the Bridge app as bot" so every
+// profile has one credential source unless an operator explicitly opts out.
+type LarkCLIConfig struct {
+	// SharedApp defaults to true. Set false only when lark-cli must use an
+	// independently managed app configuration.
+	SharedApp *bool `json:"sharedApp,omitempty"`
+	// Identity is the lark-cli bind preset: bot-only (default) or user-default.
+	Identity string `json:"identity,omitempty"`
+}
+
 // Profile is one bot instance's full configuration.
 type Profile struct {
-	AgentKind AgentKind     `json:"agentKind"`
-	App       AppConfig     `json:"app"`
-	Agent     *AgentRuntime `json:"agent,omitempty"`
+	AgentKind AgentKind      `json:"agentKind"`
+	App       AppConfig      `json:"app"`
+	Agent     *AgentRuntime  `json:"agent,omitempty"`
+	LarkCLI   *LarkCLIConfig `json:"larkCli,omitempty"`
 
 	// Access is chat access control (owner is not listed; resolved at runtime).
 	Access ChatAccess `json:"access,omitempty"`
@@ -113,6 +125,27 @@ type Profile struct {
 		// (requires "读取群聊全部消息" permission in Lark console).
 		AllowAutoReply bool `json:"allowAutoReply,omitempty"`
 	} `json:"preferences,omitempty"`
+}
+
+// LarkCLISharedApp reports whether lark-cli must be bound to this profile's
+// Bridge app. Sharing is the global default; only an explicit false opts out.
+func (p *Profile) LarkCLISharedApp() bool {
+	return p.LarkCLI == nil || p.LarkCLI.SharedApp == nil || *p.LarkCLI.SharedApp
+}
+
+// LarkCLIIdentity returns the configured bind identity preset. An empty value
+// is intentionally bot-only so lark-cli calls use the same bot subject as the
+// Bridge connection by default.
+func (p *Profile) LarkCLIIdentity() (string, error) {
+	if p.LarkCLI == nil || p.LarkCLI.Identity == "" {
+		return "bot-only", nil
+	}
+	switch p.LarkCLI.Identity {
+	case "bot-only", "user-default":
+		return p.LarkCLI.Identity, nil
+	default:
+		return "", fmt.Errorf("larkCli.identity 必须是 bot-only 或 user-default，当前为 %q", p.LarkCLI.Identity)
+	}
 }
 
 // IdleTimeout returns the per-run idle watchdog in minutes.
@@ -207,6 +240,28 @@ func NewPaths() Paths { return Paths{Home: HomeDir()} }
 func (p Paths) ConfigFile() string { return filepath.Join(p.Home, "config.json") }
 
 func (p Paths) ProfileDir(name string) string { return filepath.Join(p.Home, "profiles", name) }
+
+// LarkCLIBaseDir is the profile-isolated lark-cli base directory. lark-cli
+// adds its own lark-channel workspace segment below this path.
+func (p Paths) LarkCLIBaseDir(profile string) string {
+	return filepath.Join(p.ProfileDir(profile), "lark-cli")
+}
+
+// LarkCLIWorkspaceConfig is lark-cli's effective config under LARK_CHANNEL=1.
+func (p Paths) LarkCLIWorkspaceConfig(profile string) string {
+	return filepath.Join(p.LarkCLIBaseDir(profile), "lark-channel", "config.json")
+}
+
+// LarkCLIProjectionFile is the secret-free lark-channel source projected from
+// the canonical Bridge profile config for `lark-cli config bind`.
+func (p Paths) LarkCLIProjectionFile(profile string) string {
+	return filepath.Join(p.ProfileDir(profile), "lark-cli-source.json")
+}
+
+// LarkCLISyncFile stores a non-secret fingerprint of the last successful bind.
+func (p Paths) LarkCLISyncFile(profile string) string {
+	return filepath.Join(p.ProfileDir(profile), "lark-cli-sync.json")
+}
 
 func (p Paths) SessionsFile(profile string) string {
 	return filepath.Join(p.ProfileDir(profile), "sessions.json")

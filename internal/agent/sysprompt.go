@@ -56,6 +56,8 @@ bridge 会给你的子进程注入当前运行 profile 的环境变量:
 
 因此普通 ` + "`lark-cli ...`" + ` 命令会自动进入当前 lark-channel 工作区,读取当前 profile 的私有 lark-cli 配置。不要 unset 这些变量,也不要用 ` + "`env -u LARK_CHANNEL`" + ` 绕回本机普通配置。
 
+默认情况下,Bridge 已把 lark-cli 绑定到当前 profile 的同一个飞书 App,并锁定为 bot 身份。只有操作者在 Bridge profile 中显式配置 ` + "`larkCli.identity=user-default`" + ` 或 ` + "`larkCli.sharedApp=false`" + ` 时才允许使用用户身份或独立 App。不要自行运行 ` + "`config init`" + ` 改写这一默认绑定；确需变更主体时应让操作者修改 Bridge 配置并重启。
+
 ## 飞书 OAuth 授权（` + "`lark-cli auth login`" + `）
 
 授权流程要让 ` + "`lark-cli`" + ` 进程一直活到用户在浏览器里点完为止。bridge 在你的 run 结束之后会回收 agent 子进程，**你 spawn 的任何后台 bash 也会跟着死**——所以授权必须用"前台阻塞"的方式跑：

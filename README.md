@@ -153,9 +153,44 @@ pi list
 | `~/.lark-coding-agent-bridge/profiles/<name>/bindings.json` | 会话↔聊天绑定表（ADR-0005/0007；群跑完自动写入） |
 | `~/.lark-coding-agent-bridge/profiles/<name>/workspaces.json` | 工作区绑定 |
 | `~/.lark-coding-agent-bridge/profiles/<name>/media/` | 附件缓存 |
+| `~/.lark-coding-agent-bridge/profiles/<name>/lark-cli-source.json` | Bridge app 的无密钥 lark-cli 绑定投影（ADR-0023） |
+| `~/.lark-coding-agent-bridge/profiles/<name>/lark-cli-sync.json` | 最近一次成功主体同步的非秘密指纹 |
+| `~/.lark-coding-agent-bridge/profiles/<name>/lark-cli/lark-channel/` | profile 隔离的 lark-cli 派生配置、Token 与缓存 |
 | `~/.lark-coding-agent-bridge/workspaces/<name>/default/` | 默认工作目录 |
 
 设置 `LARK_CODING_BRIDGE_HOME=/path/to/state` 可迁移全部本地状态。
+
+## Bridge 与 lark-cli 飞书主体（ADR-0023）
+
+默认无需配置：Bridge 启动时以当前 profile 的 `app` 为唯一凭据源，把该 App 按需同步
+到 profile 私有的 lark-cli workspace，并锁定 `bot-only`。因此 agent 执行普通
+`lark-cli ...` 时，默认与收消息的 Bridge bot 使用同一 App、同一 bot 主体。
+
+- 未安装 lark-cli 时不影响 Bridge；安装后要求 `lark-cli >= 1.0.43`，旧版运行
+  `lark-cli update`。
+- 同步只在 App ID、Secret、租户、身份策略或实际绑定变化时执行；普通重启不会重复绑定。
+- 绑定失败或结果主体不一致时 Bridge 拒绝启动，不会回退到本机其他 lark-cli 配置。
+- `lark-cli-source.json` 只含指向根配置的 file provider/JSON Pointer，不复制 App Secret。
+
+只有确实需要代表用户访问个人日历、邮箱或云空间时，才显式允许同一 App 使用用户身份：
+
+```json
+"larkCli": {
+  "identity": "user-default"
+}
+```
+
+这会扩大 agent 的权限边界，并且仍需通过 `lark-cli auth login` 完成用户 OAuth。若必须
+让 lark-cli 使用完全独立的 App，可显式退出自动统一：
+
+```json
+"larkCli": {
+  "sharedApp": false
+}
+```
+
+退出后 Bridge 仍注入 profile 隔离目录与 `LARK_CHANNEL=1`，但 lark-cli 的应用配置和
+主体一致性改由操作者负责。
 
 ## Agent 启动前置命令（按机器配置）
 

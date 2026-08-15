@@ -96,3 +96,27 @@ func TestValidProfileName(t *testing.T) {
 		t.Error("invalid names accepted")
 	}
 }
+
+func TestLarkCLIDefaultsAndExplicitOverrides(t *testing.T) {
+	p := &Profile{}
+	if !p.LarkCLISharedApp() {
+		t.Fatal("shared app must be the default")
+	}
+	if got, err := p.LarkCLIIdentity(); err != nil || got != "bot-only" {
+		t.Fatalf("default identity = %q, %v", got, err)
+	}
+
+	shared := false
+	p.LarkCLI = &LarkCLIConfig{SharedApp: &shared, Identity: "user-default"}
+	if p.LarkCLISharedApp() {
+		t.Fatal("explicit sharedApp=false must opt out")
+	}
+	if got, err := p.LarkCLIIdentity(); err != nil || got != "user-default" {
+		t.Fatalf("explicit identity = %q, %v", got, err)
+	}
+
+	p.LarkCLI.Identity = "invalid"
+	if _, err := p.LarkCLIIdentity(); err == nil {
+		t.Fatal("invalid identity must fail")
+	}
+}

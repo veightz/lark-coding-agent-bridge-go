@@ -83,6 +83,7 @@
 <ul>
   <li><b>扫码注册向导</b>：复刻 registerApp 协议（POST <code>accounts.feishu.cn/oauth/v1/app/registration</code>，begin → 二维码 → poll），零手工配置创建飞书应用。</li>
   <li><b>多 profile</b>：配置与会话/工作区隔离存储在 <code>~/.lark-coding-agent-bridge/</code> 下。</li>
+  <li><b>飞书主体统一</b>（ADR-0023）：每个 profile 的 Bridge app 是 lark-cli 的默认唯一凭据源；启动时按需同步并锁定 bot-only，只有显式配置才允许 user 身份或独立 App。</li>
   <li><b>多 agent 适配器</b>：spawn-per-message（claude、codex、kimi）与常驻进程（pi/omp RPC、opencode HTTP+SSE、Grok / Cursor ACP）两类形态，统一为同一事件流抽象。</li>
   <li><b>流式卡片</b>：CardKit 2.0，400ms 节流全卡更新，飞书客户端呈现打字机效果。</li>
   <li><b>模型反问卡片</b>（ADR-0008 / ADR-0014 / ADR-0020 / ADR-0021 / ADR-0022）：Claude <code>AskUserQuestion</code> / Codex <code>requestUserInput</code> / OpenCode <code>question</code> / Pi·omp <code>extension_ui_request</code> / Grok <code>ask_user_question</code>（ACP reverse <code>_x.ai/ask_user_question</code>）/ Cursor <code>cursor/ask_question</code> 在飞书弹出交互卡片，用户点选（单题也可直接输入：freeform 卡片带输入框与提交图标，同时支持聊天文字回复）后回填 agent；pending ask 期间暂停 idle 看门狗。交互结束后旧运行卡定格为“已在下方新卡片继续”，后续输出切换到 ask 卡下方新建的流式卡，保证正在更新的消息始终是会话最新一条。Pi 无内置提问工具，反问由社区扩展 <code>npm:pi-ask-user</code> 提供（全局 packages 自动加载，见 implementation.html 3.3）；omp 内置 <code>ask</code>，通常不必装扩展。Grok 必须走 <code>grok agent stdio</code>：headless stream-json 无 client 通道，无法应答反问。Cursor 必须走官方 ACP（<code>cursor-agent acp</code> 或已校验的 Cursor <code>agent acp</code>）：print <code>stream-json</code> 无法应答 <code>cursor/ask_question</code>；探测<b>禁止</b>把本机 Grok <code>agent</code> 当成 Cursor。</li>
@@ -196,6 +197,20 @@
   <li><b>消息中枢</b>：<code>internal/bridge</code> 负责消息归一化、600ms 防抖合并（连续多条消息合并为一次运行）、斜杠命令分流；<code>/model</code> 通过可选的 <code>ModelProvider</code> 按当前工作目录读取模型并用一次性 CardKit 卡片切换当前 scope，<code>/usage</code> 通过 <code>UsageProvider</code> 读取 Codex 账户额度或 OpenCode / Pi 本地活动统计。会话按 <b>scope</b>（<code>chat</code> 或 <code>chat:thread</code>）隔离。</li>
   <li><b>运行编排</b>：一次运行 = 下载附件 → 构造 prompt → 调 agent 适配器 → 事件流经 <code>card.Reduce</code> 状态机 → 渲染 → 节流推卡 → 会话持久化。</li>
   <li><b>监督</b>：<code>internal/supervisor</code> 独立于 SDK 重连，做 REST 存活探测并强制重建半死连接。</li>
+</ul>
+
+<h3>2.1 Bridge / lark-cli 主体统一（ADR-0023）</h3>
+<p>每个 profile 的 <code>app.appId/appSecret/tenant</code> 是唯一人工维护的飞书应用配置。启动顺序在创建 agent 适配器之前增加主体协调：<code>internal/larkcli</code> 生成官方 lark-channel bind schema 的无密钥投影，比较源指纹与 lark-cli workspace 的有效绑定，仅在不一致时执行 <code>lark-cli config bind --source lark-channel --identity bot-only</code>。</p>
+<pre><code>Bridge profile.app（唯一事实源）
+  ├─ Bridge WS / REST client（同一 App，bot）
+  └─ lark-cli-source.json（file provider + JSON Pointer，不复制 Secret）
+       └─ profile/lark-cli/lark-channel/config.json（官方 bind 派生配置）
+            └─ agent 子进程调用 lark-cli（默认 strict bot-only）</code></pre>
+<ul>
+  <li><b>默认强一致</b>：App ID、租户、Secret 源指纹和身份策略任一变化都会触发重新绑定；绑定结果必须回报预期 <code>app_id</code> 与 identity，否则 Bridge 拒绝启动。</li>
+  <li><b>避免无意义重绑</b>：同步指纹与实际绑定均匹配时跳过 CLI 调用，保留已有用户 OAuth 记录。</li>
+  <li><b>显式例外</b>：<code>larkCli.sharedApp=false</code> 退出自动同步；<code>larkCli.identity=user-default</code> 仍使用同一 App，但允许代表已授权用户。两者都必须写入 profile 配置，不存在隐式回退。</li>
+  <li><b>失败策略</b>：未安装 lark-cli 不影响 Bridge；已安装但低于 1.0.43、绑定失败或结果不匹配时 fail closed，避免继续使用旧主体。</li>
 </ul>
 
 <h2 id="s3"><span class="no">3</span>Agent 适配层：四种适配器与协议时序</h2>
@@ -974,7 +989,10 @@ Codex 返回额度窗口，OpenCode / Pi / omp 返回本地 session/token/cache/
 │       ├── bindings.json          # sessionKey → scope/chat（/bind + 群自动关联 + /open，ADR-0005/0007）
 │       ├── workspaces.json        # scope → 工作目录映射
 │       ├── media/                 # 下载的消息附件
-│       └── lark-cli/              # 该 profile 的 lark 侧凭据/缓存
+│       ├── lark-cli-source.json   # Bridge app 的无密钥 bind 投影（ADR-0023）
+│       ├── lark-cli-sync.json     # 最近一次成功绑定的非秘密源指纹
+│       └── lark-cli/
+│           └── lark-channel/     # 该 profile 的 lark-cli 派生凭据/Token/缓存
 └── workspaces/
     └── &lt;name&gt;/
         └── default/               # 默认工作目录</code></pre>

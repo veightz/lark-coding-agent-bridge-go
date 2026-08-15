@@ -46,6 +46,7 @@ cmd/lark-coding-agent-bridge-go/   CLI 入口与子命令
 internal/
   onboard/      扫码注册向导（registerApp 协议复刻）
   config/       根配置 + 路径布局（~/.lark-coding-agent-bridge/）
+  larkcli/      Bridge profile app → lark-cli 主体同步（ADR-0023）
   state/        会话 / 工作区 / 绑定 JSON 存储
   agent/        多 agent 适配器 + ACP client（Grok 主路径，ADR-0020）
   ask/          模型反问 broker + 飞书 ask 卡片 + Claude hook IPC（ADR-0008，对标 botmux）

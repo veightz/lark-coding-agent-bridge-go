@@ -39,6 +39,7 @@ import (
 	"lark-coding-agent-bridge-go/internal/buildinfo"
 	"lark-coding-agent-bridge-go/internal/config"
 	"lark-coding-agent-bridge-go/internal/lark"
+	"lark-coding-agent-bridge-go/internal/larkcli"
 	"lark-coding-agent-bridge-go/internal/onboard"
 	"lark-coding-agent-bridge-go/internal/registry"
 	"lark-coding-agent-bridge-go/internal/supervisor"
@@ -134,6 +135,11 @@ func run(profileName, agentKind, workspace, appID string) error {
 		return err
 	}
 	_ = cfg // config is persisted by loadOrOnboard; only the profile is needed
+	if synced, err := larkcli.EnsureSharedBinding(context.Background(), paths, profileName, profile); err != nil {
+		return err
+	} else if synced {
+		log.Printf("[lark-cli] 已统一到 Bridge profile %s 的应用主体（%s）", profileName, profile.App.AppID)
+	}
 
 	larkClient := lark.NewClient(profile.App.AppID, profile.App.AppSecret, profile.BaseURL())
 
@@ -145,7 +151,7 @@ func run(profileName, agentKind, workspace, appID string) error {
 
 	adapter := agent.NewAdapter(profile.AgentKind, profile.AgentRuntimeConfig())
 	adapter.SetBotIdentity(agent.BotIdentity{OpenID: bot.OpenID, Name: bot.AppName})
-	injectAgentEnv(adapter, paths, profileName)
+	injectAgentEnv(adapter, paths, profileName, profile)
 
 	br, err := bridge.NewBridge(paths, profileName, profile, larkClient, adapter, bot)
 	if err != nil {
@@ -417,15 +423,9 @@ func promptSecret(prompt string) (string, error) {
 
 // injectAgentEnv hands the agent subprocess the lark-channel context
 // variables (profile-local lark-cli config dir etc.).
-func injectAgentEnv(adapter agent.Adapter, paths config.Paths, profileName string) {
-	larkCliDir := paths.ProfileDir(profileName) + "/lark-cli"
-	_ = os.MkdirAll(larkCliDir, 0o755)
-	env := map[string]string{
-		"LARK_CHANNEL":             "1",
-		"LARK_CHANNEL_HOME":        paths.Home,
-		"LARK_CHANNEL_PROFILE":     profileName,
-		"LARKSUITE_CLI_CONFIG_DIR": larkCliDir,
-	}
+func injectAgentEnv(adapter agent.Adapter, paths config.Paths, profileName string, profile *config.Profile) {
+	env := larkcli.Environment(paths, profileName, profile)
+	_ = os.MkdirAll(paths.LarkCLIBaseDir(profileName), 0o700)
 	switch a := adapter.(type) {
 	case *agent.ClaudeAdapter:
 		a.Env = env
