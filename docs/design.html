@@ -78,17 +78,17 @@
 </nav>
 
 <h2 id="s1"><span class="no">1</span>项目概述</h2>
-<p>本项目把飞书消息桥接到本机运行的 coding agent CLI（claude / codex / pi / opencode），并以<b>流式卡片</b>的形式把 agent 的思考、文本输出、工具调用过程实时回投到飞书会话中。它是 TS 项目 <code>lark-channel-bridge</code> 的 Go 复刻。</p>
+<p>本项目把飞书消息桥接到本机运行的 coding agent CLI（claude / codex / pi / omp / opencode / grok / kimi / cursor），并以<b>流式卡片</b>的形式把 agent 的思考、文本输出、工具调用过程实时回投到飞书会话中。它是 TS 项目 <code>lark-channel-bridge</code> 的 Go 复刻。</p>
 <p>核心能力：</p>
 <ul>
   <li><b>扫码注册向导</b>：复刻 registerApp 协议（POST <code>accounts.feishu.cn/oauth/v1/app/registration</code>，begin → 二维码 → poll），零手工配置创建飞书应用。</li>
   <li><b>多 profile</b>：配置与会话/工作区隔离存储在 <code>~/.lark-coding-agent-bridge/</code> 下。</li>
-  <li><b>四种 agent 适配器</b>：spawn-per-message（claude、codex）与常驻进程（pi RPC、opencode HTTP+SSE）两类形态，统一为同一事件流抽象。</li>
+  <li><b>多 agent 适配器</b>：spawn-per-message（claude、codex、kimi）与常驻进程（pi/omp RPC、opencode HTTP+SSE、Grok / Cursor ACP）两类形态，统一为同一事件流抽象。</li>
   <li><b>流式卡片</b>：CardKit 2.0，400ms 节流全卡更新，飞书客户端呈现打字机效果。</li>
-  <li><b>模型反问卡片</b>（ADR-0008 / ADR-0014）：Claude <code>AskUserQuestion</code> / Codex <code>requestUserInput</code> / OpenCode <code>question</code> / Pi <code>extension_ui_request</code> 在飞书弹出交互卡片，用户点选（单题也可直接输入：freeform 卡片带输入框与提交图标，同时支持聊天文字回复）后回填 agent；pending ask 期间暂停 idle 看门狗。交互结束后旧运行卡定格为“已在下方新卡片继续”，后续输出切换到 ask 卡下方新建的流式卡，保证正在更新的消息始终是会话最新一条。Pi 无内置提问工具，反问由社区扩展 <code>npm:pi-ask-user</code> 提供（全局 packages 自动加载，见 implementation.html 3.3）。</li>
+  <li><b>模型反问卡片</b>（ADR-0008 / ADR-0014 / ADR-0020 / ADR-0021 / ADR-0022）：Claude <code>AskUserQuestion</code> / Codex <code>requestUserInput</code> / OpenCode <code>question</code> / Pi·omp <code>extension_ui_request</code> / Grok <code>ask_user_question</code>（ACP reverse <code>_x.ai/ask_user_question</code>）/ Cursor <code>cursor/ask_question</code> 在飞书弹出交互卡片，用户点选（单题也可直接输入：freeform 卡片带输入框与提交图标，同时支持聊天文字回复）后回填 agent；pending ask 期间暂停 idle 看门狗。交互结束后旧运行卡定格为“已在下方新卡片继续”，后续输出切换到 ask 卡下方新建的流式卡，保证正在更新的消息始终是会话最新一条。Pi 无内置提问工具，反问由社区扩展 <code>npm:pi-ask-user</code> 提供（全局 packages 自动加载，见 implementation.html 3.3）；omp 内置 <code>ask</code>，通常不必装扩展。Grok 必须走 <code>grok agent stdio</code>：headless stream-json 无 client 通道，无法应答反问。Cursor 必须走官方 ACP（<code>cursor-agent acp</code> 或已校验的 Cursor <code>agent acp</code>）：print <code>stream-json</code> 无法应答 <code>cursor/ask_question</code>；探测<b>禁止</b>把本机 Grok <code>agent</code> 当成 Cursor。</li>
   <li><b>Codex 工具权限</b>（ADR-0014）：<code>workspace</code>/<code>read-only</code> 时 app-server 的命令执行、文件修改与额外权限请求 → 飞书卡 → 原 JSON-RPC request id 回填；<code>full</code> 保持无审批。</li>
   <li><b>OpenCode 工具权限</b>（ADR-0011 / ADR-0018）：server 启动时注入 profile 权限规则；<code>full</code> 全允许，<code>workspace</code> 允许工作区编辑且 shell/网络询问，<code>read-only</code> 拒绝 edit/bash，产生的 ask 事件经飞书卡回填 <code>POST /permission/{id}/reply</code>。这是工具权限约束，不宣称等同于 Codex OS sandbox。</li>
-  <li><b>Pi 能力对齐</b>（ADR-0019）：原生 RPC 提供模型目录与常驻进程热切换，本地 session JSONL 提供 token/cache/cost 汇总；<code>read-only</code> 只启用内置只读工具，但不宣称等同于 Codex OS sandbox。</li>
+  <li><b>Pi / Oh My Pi 能力对齐</b>（ADR-0019 / ADR-0021）：原生 RPC 提供模型目录与常驻进程热切换，本地 session JSONL 提供 token/cache/cost 汇总；Pi <code>read-only</code> 为 <code>read,grep,find,ls</code>，omp 为 <code>read,grep,glob</code>；omp 续会话用 <code>--resume</code>、默认 <code>~/.omp/agent</code>，与 <code>pi</code> 独立 kind，不宣称 OS sandbox。</li>
   <li><b>聊天访问白名单</b>（ADR-0013）：默认仅应用 owner；<code>/invite user|admin|group</code> 管理名单；陌生人静默丢弃。</li>
   <li><b>三层健壮性</b>：SDK 重连 + supervisor 半死连接检测 + run 级 idle 看门狗；opencode 另加 SSE 帧看门狗（75s 无帧强制重连）与 3s 轮询回补（以服务端消息列表对账，丢帧文本自动补回）。</li>
   <li><b>运维闭环</b>：进程注册表 + dashboard + 自升级。</li>
@@ -287,15 +287,16 @@
 </div>
 
 <table>
-  <tr><th>维度</th><th>claude</th><th>codex</th><th>pi</th><th>opencode</th></tr>
-  <tr><td>进程模型</td><td>spawn-per-message</td><td>spawn-per-message</td><td>常驻 RPC（每 scope）</td><td>常驻 HTTP server（每 profile）</td></tr>
-  <tr><td>启动命令</td><td><code>claude -p --output-format stream-json --verbose --permission-mode &lt;mode&gt; --append-system-prompt-file &lt;tmp&gt;</code></td><td><code>codex app-server --stdio</code></td><td><code>pi --mode rpc --append-system-prompt &lt;prompt&gt; [--session-id &lt;id&gt;]</code></td><td><code>opencode serve --port &lt;port&gt; --hostname 127.0.0.1</code></td></tr>
-  <tr><td>输入通道</td><td>stdin（prompt）</td><td>stdin JSON-RPC（initialize / thread / turn / approval response）</td><td>stdin JSONL 命令</td><td>REST（prompt_async）</td></tr>
-  <tr><td>输出通道</td><td>stdout 逐行 stream-json</td><td>stdout JSON-RPC 通知与 server request</td><td>stdout 事件流</td><td>SSE 事件流（按工作目录划分）</td></tr>
-  <tr><td>turn 结束信号</td><td><code>result</code> 消息</td><td><code>turn/completed</code></td><td><code>agent_settled</code></td><td><code>session.idle</code> / <code>session.error</code></td></tr>
-  <tr><td>中断方式</td><td>SIGTERM → 5s → SIGKILL</td><td><code>turn/interrupt</code> → grace → SIGTERM/SIGKILL</td><td><code>abort</code> 命令</td><td><code>POST /session/{id}/abort</code></td></tr>
-  <tr><td>会话保持</td><td><code>--resume &lt;sessionId&gt;</code></td><td><code>thread/resume(threadId)</code></td><td>进程内会话 + <code>--session-id</code></td><td>磁盘持久化，sessionID 续聊</td></tr>
-  <tr><td>模型 / 用量</td><td>—</td><td><code>model/list</code> / 账户额度</td><td><code>get_available_models</code> + <code>set_model</code> / session JSONL 聚合</td><td><code>/config/providers</code> / DB 聚合</td></tr>
+  <tr><th>维度</th><th>claude</th><th>codex</th><th>pi</th><th>omp（Oh My Pi）</th><th>opencode</th></tr>
+  <tr><td>进程模型</td><td>spawn-per-message</td><td>spawn-per-message</td><td>常驻 RPC（每 scope）</td><td>常驻 RPC（每 scope，复用 Pi 事件协议）</td><td>常驻 HTTP server（每 profile）</td></tr>
+  <tr><td>启动命令</td><td><code>claude -p --output-format stream-json --verbose --permission-mode &lt;mode&gt; --append-system-prompt-file &lt;tmp&gt;</code></td><td><code>codex app-server --stdio</code></td><td><code>pi --mode rpc --append-system-prompt &lt;prompt&gt; [--session-id &lt;id&gt;]</code></td><td><code>omp --mode rpc --append-system-prompt &lt;prompt&gt; [--resume &lt;id&gt;]</code></td><td><code>opencode serve --port &lt;port&gt; --hostname 127.0.0.1</code></td></tr>
+  <tr><td>输入通道</td><td>stdin（prompt）</td><td>stdin JSON-RPC（initialize / thread / turn / approval response）</td><td>stdin JSONL 命令</td><td>stdin JSONL 命令</td><td>REST（prompt_async）</td></tr>
+  <tr><td>输出通道</td><td>stdout 逐行 stream-json</td><td>stdout JSON-RPC 通知与 server request</td><td>stdout 事件流</td><td>stdout 事件流（同 Pi 子集）</td><td>SSE 事件流（按工作目录划分）</td></tr>
+  <tr><td>turn 结束信号</td><td><code>result</code> 消息</td><td><code>turn/completed</code></td><td><code>agent_settled</code></td><td><code>agent_end</code>（omp 不发 <code>agent_settled</code>；<code>turn_end</code> 仅轮次边界，不关 Run）</td><td><code>session.idle</code> / <code>session.error</code></td></tr>
+  <tr><td>中断方式</td><td>SIGTERM → 5s → SIGKILL</td><td><code>turn/interrupt</code> → grace → SIGTERM/SIGKILL</td><td><code>abort</code> 命令</td><td><code>abort</code> 命令</td><td><code>POST /session/{id}/abort</code></td></tr>
+  <tr><td>会话保持</td><td><code>--resume &lt;sessionId&gt;</code></td><td><code>thread/resume(threadId)</code></td><td>进程内会话 + <code>--session-id</code>；默认 <code>~/.pi/agent</code></td><td>进程内会话 + <code>--resume</code>；默认 <code>~/.omp/agent</code>（无 <code>--session-id</code>）</td><td>磁盘持久化，sessionID 续聊</td></tr>
+  <tr><td>模型 / 用量</td><td>—</td><td><code>model/list</code> / 账户额度</td><td><code>get_available_models</code> + <code>set_model</code> / session JSONL 聚合</td><td>同 Pi RPC；session 扫 <code>~/.omp/agent/sessions</code></td><td><code>/config/providers</code> / DB 聚合</td></tr>
+  <tr><td>read-only 工具</td><td>plan 模式</td><td>sandbox read-only</td><td><code>--tools read,grep,find,ls</code></td><td><code>--tools read,grep,glob</code></td><td>permission 规则拒绝 edit/bash</td></tr>
 </table>
 <p>各 profile 可配置本机专用的 <code>agent.commandPrefix</code>、<code>shell</code> 与
 <code>shellArgs</code>（ADR-0015）。未配置时直接启动 CLI；配置后由短生命周期 shell
@@ -305,13 +306,13 @@
 macOS launchd），则继续检查 <code>~/.volta/bin</code>、<code>~/.local/bin</code>、
 <code>~/.bun/bin</code>、<code>~/.npm-global/bin</code>、<code>~/Library/pnpm</code>、
 <code>/opt/homebrew/bin</code> 与 <code>/usr/local/bin</code> 中的可执行文件。显式路径不改写。</p>
-<p>Codex、OpenCode 与 Pi adapter 都实现 <code>ModelProvider</code>：Codex 通过 app-server
+<p>Codex、OpenCode、Pi 与 omp adapter 都实现 <code>ModelProvider</code>：Codex 通过 app-server
 <code>model/list</code> 获取当前账号可见模型，OpenCode 通过目录级
-<code>/config/providers</code> 获取当前项目可用模型，Pi 通过临时 sessionless RPC 的
+<code>/config/providers</code> 获取当前项目可用模型，Pi/omp 通过临时 sessionless RPC 的
 <code>get_available_models</code> 获取目录配置下的模型。Bridge 的 <code>/model</code> 卡片以
 15 分钟一次性 nonce 约束回调选项，选择结果写入当前 scope 的
-<code>Session.Model</code>（ADR-0016/0018/0019）。三者也实现 <code>UsageProvider</code>：
-Codex 返回额度窗口，OpenCode 与 Pi 返回本地 session/token/cache/cost 聚合。</p>
+<code>Session.Model</code>（ADR-0016/0018/0019/0021）。它们也实现 <code>UsageProvider</code>：
+Codex 返回额度窗口，OpenCode / Pi / omp 返回本地 session/token/cache/cost 聚合。</p>
 
 <h3>3.2 claude 协议时序（spawn-per-message）</h3>
 <div class="fig">
@@ -602,7 +603,7 @@ Codex 返回额度窗口，OpenCode 与 Pi 返回本地 session/token/cache/cost
 <div class="cap">图 7 · ACP 决策对比：统一协议 vs 原生协议</div>
 </div>
 
-<p>保留的 <code>internal/agent/acp.go</code> 最小 ACP client 覆盖：<code>initialize</code> / <code>session/new</code> / <code>session/prompt</code> / <code>session/cancel</code> + <code>session/update</code> 事件翻译 + <code>request_permission</code> 自动放行。由于适配器内部抽象本身与 ACP 语义对齐（且为其超集），未来若要迁移 claude / codex 到 ACP，只需替换适配器实现，上层不动。</p>
+<p>保留的 <code>internal/agent/acp.go</code> 最小 ACP client 覆盖：<code>initialize</code> / <code>authenticate</code> / <code>session/new</code> / <code>session/load</code> / <code>session/prompt</code> / <code>session/cancel</code> + <code>session/update</code> 事件翻译 + <code>request_permission</code> 自动放行 + 可插拔 reverse RPC。Grok（ADR-0020）与 Cursor（ADR-0022）的官方机器接口就是 ACP，因此它们走这条已有 client，而不是再包一层 print NDJSON。Cursor 二进制解析见 <code>ResolveCursorBinary</code> / <code>LookLikeCursorCLI</code>：优先 <code>cursor-agent</code>，名为 <code>agent</code> 时必须通过身份校验，symlink 落入 <code>/.grok/</code> 立即拒绝。由于适配器内部抽象本身与 ACP 语义对齐（且为其超集），未来若要迁移 claude / codex 到 ACP，只需替换适配器实现，上层不动。</p>
 
 <h2 id="s5"><span class="no">5</span>流式卡片机制</h2>
 <p>agent 事件到飞书客户端「打字机效果」的完整链路：<b>事件 → Reduce（不可变状态机）→ Render（CardKit 2.0 JSON）→ 400ms 节流 + 串行更新队列 → cardkit API → 客户端渲染</b>。</p>
@@ -684,7 +685,7 @@ Codex 返回额度窗口，OpenCode 与 Pi 返回本地 session/token/cache/cost
     <ul>
       <li>思考内容 → 折叠面板（thinking）；</li>
       <li>正文 → markdown 文本块；</li>
-      <li>工具调用 → detail 默认折叠（含最新工具与子 agent）；<b>≥3 个时另外合并折叠历史调用</b>，避免 bash 输出随每秒整卡刷新反复改变页面高度；</li>
+      <li>工具调用 → 平铺一行摘要（状态 + 名称 + 关键参数），<b>不套折叠按钮</b>；完整 stdout 不进卡片，避免心跳整卡刷新撑高页面；</li>
       <li>运行中 footer 以稳定单行显示“当前动作 + 已运行时间”，耗时仍每秒 tick；同时保留 <b>⏹ 终止按钮</b>（callback <code>cmd=stop</code>）；</li>
       <li>终态标注：中断 / 超时 / 错误。</li>
     </ul>

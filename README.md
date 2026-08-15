@@ -1,6 +1,6 @@
 # lark-coding-agent-bridge-go
 
-[zarazhangrui/lark-coding-agent-bridge](https://github.com/zarazhangrui/lark-coding-agent-bridge)（npm 包名 `lark-channel-bridge`）的 **Go 语言复刻增强版**：把飞书 / Lark 消息桥接到本地 coding agent（**Claude Code / Codex CLI / pi / opencode**）。扫码绑定 PersonalAgent 应用后，即可在聊天里直接驱动本地 coding agent。
+[zarazhangrui/lark-coding-agent-bridge](https://github.com/zarazhangrui/lark-coding-agent-bridge)（npm 包名 `lark-channel-bridge`）的 **Go 语言复刻增强版**：把飞书 / Lark 消息桥接到本地 coding agent（**Claude Code / Codex CLI / pi / Oh My Pi(omp) / opencode / Grok / Kimi / Cursor**）。扫码绑定 PersonalAgent 应用后，即可在聊天里直接驱动本地 coding agent。
 
 ### 重点学习参考
 
@@ -13,6 +13,8 @@
 | OpenCode `question` | 插件转 hook | 适配器直接消费 SSE `question.asked` |
 | OpenCode 工具权限 | （视实现） | SSE `permission.asked` → 飞书卡 → `POST /permission/{id}/reply`（ADR-0011） |
 | Pi Extension UI | （botmux 走 TUI，本仓库用 RPC） | `extension_ui_request` → 卡片 → `extension_ui_response` |
+| Grok `ask_user_question` | （ACP 客户端） | `grok agent stdio` reverse RPC `_x.ai/ask_user_question` → 卡片（ADR-0020） |
+| Cursor `cursor/ask_question` | （ACP 客户端） | `cursor-agent acp` reverse RPC → 卡片（ADR-0022）；不把 Grok `agent` 当成 Cursor |
 | 降级 | daemon 不可达 passthrough | 同语义（空 stdout / 不 reply / cancelled） |
 
 原版起点仍是 [lark-channel-bridge](https://github.com/zarazhangrui/lark-coding-agent-bridge)。
@@ -20,20 +22,24 @@
 ## 功能
 
 - **消息桥接**：私聊直接发消息，群里 `@bot`，消息转发给本地 agent。
-- **四种 agent**：
+- **多种 agent**：
   - `claude` — spawn-per-message stream-json（`--resume` 续会话）
   - `codex` — spawn-per-message `codex app-server --stdio`（双向 JSON-RPC，thread resume 续会话）
   - `pi` — **常驻 RPC 进程**（每 scope 一个 `pi --mode rpc`，原生 JSONL 协议，`abort` 优雅中断）
+  - `omp` — **Oh My Pi**，常驻 RPC（复用 Pi 事件协议；`--resume` 续会话、默认 `~/.omp/agent`，ADR-0021）
   - `opencode` — **常驻 HTTP server**（`opencode serve`，REST + 按工作目录划分的 SSE 事件流，`abort` API 中断，`/global/health` 存活探测）
+  - `grok` — **常驻 ACP 进程**（每 scope 一个 `grok agent stdio`，`session/prompt` + reverse ask，ADR-0020）
+  - `kimi` — spawn-per-message stream-json
+  - `cursor` — **常驻 ACP 进程**（每 scope 一个 `cursor-agent acp` 或已校验的 Cursor `agent acp`，`session/prompt` + `cursor/ask_question`，ADR-0022）
 - **流式卡片**：回复实时渲染在 CardKit 2.0 流式卡片上（文本、思考、工具调用折叠面板、⏹ 终止按钮）。
-- **会话保持**：每个私聊 / 群 / 话题各自维护独立会话；pi/opencode 会话落盘，bridge 重启后自动续聊。
+- **会话保持**：每个私聊 / 群 / 话题各自维护独立会话；pi/omp/opencode 会话落盘，bridge 重启后自动续聊。
 - **排队与合并**：短时间连续消息自动合并；运行期间发来的消息排队到下一轮；`/new`、`/cd`、`/stop` 可随时打断。
 - **三层健壮性**：SDK 自动重连 + supervisor 存活探测强制重建（半死连接自愈）+ run 级 idle 看门狗（默认 10 分钟无事件自动终止并标注卡片）。
 - **多工作区**：`/cd` 切换目录，`/ws` 保存 / 复用命名工作区。
-- **图片和文件**：直接发给 bot，自动下载本地并附上路径（pi 走 base64 内嵌，opencode 走 file part）。
-- **模型反问卡片**（ADR-0008/0018）：Claude `AskUserQuestion` / OpenCode `question` / Pi `extension_ui_request` 在飞书弹出交互卡片，点选或直接回复文字后 agent 继续。
-- **权限模式**（ADR-0011/0014/0018/0019）：Codex / OpenCode 的受限模式按原生协议执行权限策略并在需要时弹飞书确认卡；Pi `read-only` 只启用 `read/grep/find/ls`，移除 shell、写文件和扩展工具。
-- **模型与用量**（ADR-0016/0018/0019）：Codex、OpenCode、Pi 均支持 `/model`；`/usage` 展示 Codex 账户额度，或 OpenCode / Pi 本地 session/token/cache/cost 统计。
+- **图片和文件**：直接发给 bot，自动下载本地并附上路径（pi/omp 走 base64 内嵌，opencode 走 file part）。
+- **模型反问卡片**（ADR-0008/0018/0020/0021/0022）：Claude `AskUserQuestion` / OpenCode `question` / Pi·omp `extension_ui_request` / Grok `ask_user_question`（ACP）/ Cursor `cursor/ask_question` 在飞书弹出交互卡片，点选或直接回复文字后 agent 继续。
+- **权限模式**（ADR-0011/0014/0018/0019/0021）：Codex / OpenCode 的受限模式按原生协议执行权限策略并在需要时弹飞书确认卡；Pi `read-only` 只启用 `read/grep/find/ls`；omp `read-only` 启用 `read/grep/glob`（不得照搬 pi 的 find/ls）。
+- **模型与用量**（ADR-0016/0018/0019/0021）：Codex、OpenCode、Pi、omp 均支持 `/model`；`/usage` 展示 Codex 账户额度，或 OpenCode / Pi / omp 本地 session/token/cache/cost 统计。
 - **扫码向导**：首次运行终端渲染二维码创建 / 绑定 PersonalAgent 应用（复刻 registerApp 协议），也支持 `--app-id`。
 - **多 profile**：独立凭证、会话、工作区与媒体缓存（`--profile` 必填）。
 - **dashboard**：查看本机所有运行中的 bridge 实例及版本（区分发布版 / 开发分支构建）。
@@ -56,7 +62,7 @@ go build -o bin/lark-coding-agent-bridge-go ./cmd/lark-coding-agent-bridge-go
 
 ## 使用
 
-运行前，本机需已安装并登录至少一个 agent CLI（`claude` / `codex` / `pi` / `opencode`）。
+运行前，本机需已安装并登录至少一个 agent CLI（`claude` / `codex` / `pi` / `omp` / `opencode` / `grok` / `kimi` / `cursor-agent`）。
 
 ### Pi 反问扩展（pi-ask-user）
 
@@ -76,11 +82,33 @@ pi list
 - `permissions.defaultAccess=read-only` 的 pi profile 会通过工具 allowlist 禁用全部扩展工具，此时反问同样不可用——这是安全优先的有意取舍（ADR-0019）。
 - 扩展装在本机 pi 全局配置（`~/.pi/agent/settings.json` 的 `packages` 列表），一台机器装一次即可，对所有 pi profile 生效。
 
+### Oh My Pi（omp）
+
+`omp` 与 `pi` 并列，**不要**把 omp profile 配成 `agentKind=pi`：
+
+- 协议：同样是 `--mode rpc` + JSONL（事件翻译复用 Pi 路径，ADR-0021）。
+- 续会话：`--resume <id>`（**没有** `--session-id`）。
+- 会话目录：默认 `~/.omp/agent/sessions`（可用 `PI_CODING_AGENT_DIR` 覆盖），不与 `~/.pi` 混用。
+- 反问：omp 内置 `ask` 工具，通常不必安装 `pi-ask-user`；Extension UI 仍回填飞书 ask 卡。
+- `read-only`：`--tools read,grep,glob`（非法工具名会启动失败）。
+
+### Cursor CLI
+
+`cursor` 与 `grok` 并列，**不要**把 Grok 的 `agent` 二进制当成 Cursor（ADR-0022）：
+
+- 协议：官方 ACP（`<cursor-agent|已校验 agent> acp`），常驻进程 + `session/new|load`。
+- 探测：优先 `cursor-agent`；名为 `agent` 时必须通过 Cursor 身份校验。本机 Grok `~/.local/bin/agent` 会被拒绝。
+- 反问：`cursor/ask_question` → 飞书 ask 卡；`cursor/create_plan` 本轮自动取消以免挂死。
+- 权限：`session/request_permission` 自动放行（`--force` 是 print 路径的无人值守等价物，运行时不用 print）。
+- 本轮不做 `/model`、`/usage`、Plan/Ask 斜杠命令、磁盘 `/sessions`+`/bind`。
+
 ```bash
 # 启动（默认命令即 run；未保存应用凭证且未指定 --app-id 时进入扫码向导）
 ./bin/lark-coding-agent-bridge-go run --profile claude-dev --agent claude
 ./bin/lark-coding-agent-bridge-go run --profile pi --agent pi --app-id cli_xxx
+./bin/lark-coding-agent-bridge-go run --profile omp --agent omp --app-id cli_xxx
 ./bin/lark-coding-agent-bridge-go run --profile oc --agent opencode --app-id cli_xxx
+./bin/lark-coding-agent-bridge-go run --profile cursor --agent cursor --app-id cli_xxx
 
 # 观测与运维
 ./bin/lark-coding-agent-bridge-go dashboard      # 运行中的实例、版本、心跳
@@ -91,7 +119,7 @@ pi list
 
 指定 `--app-id` 时会跳过扫码，并提示输入 App Secret。
 
-常用参数：`--profile <name>`、`--agent claude|codex|pi|opencode`、`--workspace <path>`、`--app-id <id>`。
+常用参数：`--profile <name>`、`--agent claude|codex|pi|omp|opencode|grok|kimi|cursor`、`--workspace <path>`、`--app-id <id>`。
 
 不同 profile 可以同时运行；同一 profile 由进程锁限制为单实例。重复启动会立即退出并提示当前占用该 profile 的 PID。
 
@@ -108,8 +136,8 @@ pi list
 | `/unbind` | 解除当前聊天的会话绑定 |
 | `/stop` | 停止当前运行（同卡片上的 ⏹ 按钮） |
 | `/status` | 查看 profile、agent、工作目录、会话状态 |
-| `/model` | 用交互卡片切换当前会话模型（Codex / OpenCode / Pi） |
-| `/usage` | 查看账户额度或本地使用统计（Codex / OpenCode / Pi） |
+| `/model` | 用交互卡片切换当前会话模型（Codex / OpenCode / Pi / omp） |
+| `/usage` | 查看账户额度或本地使用统计（Codex / OpenCode / Pi / omp） |
 | `/help` | 帮助 |
 
 私聊无需 @；群聊需要 `@bot`。
@@ -223,7 +251,7 @@ LARK_LIVE_TEST=1 go test ./internal/agent -run Live -v   # 真实 CLI 冒烟（�
 go vet ./...
 ```
 
-架构：`cmd/` 入口；`internal/onboard` 扫码注册；`internal/agent` 四种 agent 适配器 + ACP client（预留）；`internal/lark` OpenAPI 封装；`internal/card` 状态机与流式卡片；`internal/bridge` 消息路由与命令；`internal/supervisor` 连接监督；`internal/registry` 进程注册表；`internal/upgrade` 自升级；`internal/buildinfo` 版本信息。
+架构：`cmd/` 入口；`internal/onboard` 扫码注册；`internal/agent` 多 agent 适配器 + ACP client（Grok 主路径）；`internal/lark` OpenAPI 封装；`internal/card` 状态机与流式卡片；`internal/bridge` 消息路由与命令；`internal/supervisor` 连接监督；`internal/registry` 进程注册表；`internal/upgrade` 自升级；`internal/buildinfo` 版本信息。
 
 ## License
 

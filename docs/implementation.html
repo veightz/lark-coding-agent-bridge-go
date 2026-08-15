@@ -61,7 +61,7 @@
   <ol>
     <li><a href="#s1">包结构与依赖</a></li>
     <li><a href="#s2">internal/agent —— 适配层核心</a></li>
-    <li><a href="#s3">internal/agent —— 四个适配器实现</a></li>
+    <li><a href="#s3">internal/agent —— 适配器实现</a></li>
     <li><a href="#s4">internal/bridge —— 消息中枢</a></li>
     <li><a href="#s4b">internal/ask —— 模型反问（ADR-0008）</a></li>
     <li><a href="#s5">internal/card —— 流式卡片</a></li>
@@ -120,7 +120,7 @@
 
   <rect x="510" y="378" width="330" height="56" rx="8" fill="#f6f8fa" stroke="#57606a" stroke-width="1.5"/>
   <text x="675" y="400" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1f2328">internal/agent</text>
-  <text x="675" y="419" text-anchor="middle" font-size="10.5" fill="#57606a">types · run · claude · codex · pi · opencode · acp</text>
+  <text x="675" y="419" text-anchor="middle" font-size="10.5" fill="#57606a">types · run · claude · codex · pi/omp · opencode · grok · kimi · cursor · acp</text>
 
   <!-- edges（横平竖直 + 圆角折弯；箭头方向 = 依赖方向） -->
   <!-- cmd -> onboard / registry：顶部 y39 两侧车道 -->
@@ -206,7 +206,7 @@ type AccessConfigurer interface {  // 常驻 server 启动前固化 profile 权�
 func NewAdapter(kind config.AgentKind, runtime ...config.AgentRuntime) Adapter
 // 按配置构造适配器；runtime 携带本机 profile 的启动前置命令</code></pre>
 <ul>
-  <li><b>设计要点</b>：四种 agent 的协议差异全部收敛在适配器内部；bridge 与 card 只依赖 <code>Event</code>。事件语义与 ACP 对齐（且为超集），为将来迁移留路。</li>
+  <li><b>设计要点</b>：各 agent 的协议差异全部收敛在适配器内部；bridge 与 card 只依赖 <code>Event</code>。事件语义与 ACP 对齐（且为超集）。Grok 与 Cursor 以 ACP 为主路径（ADR-0020 / ADR-0022）。</li>
 </ul>
 
 <h3>2.2 子进程运行器 <span class="file">internal/agent/run.go</span>（claude / codex 共用）</h3>
@@ -233,7 +233,7 @@ agentCommand(runtime, binary, args...)
 func (r *procRun) onCleanup(fn func())   // 注册收尾（如删临时系统提示文件）
 func mergeEnv(overrides map[string]string) []string // 合并进程环境变量</code></pre>
 
-<h2 id="s3"><span class="no">3</span>internal/agent —— 四个适配器实现</h2>
+<h2 id="s3"><span class="no">3</span>internal/agent —— 适配器实现</h2>
 
 <h3>3.1 ClaudeAdapter <span class="file">internal/agent/claude.go</span></h3>
 <pre><code>func (a *ClaudeAdapter) Run(ctx context.Context, opts RunOptions) (Run, error)
@@ -270,38 +270,47 @@ type codexAppRun struct {
 // Stop                                  → turn/interrupt → grace → SIGTERM/SIGKILL</code></pre>
 <div class="note"><b>权限语义：</b><code>full</code> 使用 danger-full-access + approvalPolicy=never；<code>workspace</code>/<code>read-only</code> 使用对应 sandbox + on-request。卡片 once/always/reject 映射为 accept/acceptForSession/decline，超时与失效均拒绝。</div>
 
-<h3>3.3 PiAdapter / piSession <span class="file">internal/agent/pi.go</span>（常驻 RPC，每 scope 一进程）</h3>
-<div class="note"><b>CLI 定位：</b>共享 <code>agentCommand</code> 启动层先查进程 <code>PATH</code>，再查 Volta、<code>~/.local/bin</code>、Bun、npm、pnpm、Homebrew 等常见用户级目录。因此 launchd 的精简 <code>PATH</code> 不会导致已安装的 <code>pi</code> 无法启动；显式 binary 路径保持不变。</div>
-<pre><code>type PiAdapter struct { /* scope → *piSession 映射，并发安全 */ }
+<h3>3.3 PiAdapter / Oh My Pi（omp） <span class="file">internal/agent/pi.go</span>（常驻 RPC，每 scope 一进程）</h3>
+<div class="note"><b>CLI 定位：</b>共享 <code>agentCommand</code> 启动层先查进程 <code>PATH</code>，再查 Volta、<code>~/.local/bin</code>、Bun、npm、pnpm、Homebrew 等常见用户级目录。因此 launchd 的精简 <code>PATH</code> 不会导致已安装的 <code>pi</code>/<code>omp</code> 无法启动；显式 binary 路径保持不变。</div>
+<div class="note"><b>Oh My Pi（ADR-0021）：</b><code>NewAdapter(omp)</code> 返回同一 <code>*PiAdapter</code> 实现，经 <code>piKindConfig</code> 参数化差异——二进制 <code>omp</code>、会话 flag <code>--resume</code>（无 <code>--session-id</code>）、默认配置树 <code>~/.omp/agent</code>、read-only <code>--tools read,grep,glob</code>、用量标签与 ask Source=<code>omp</code>。事件翻译 / prompt / abort 与 Pi 共用，不复制 translator。</div>
+<pre><code>type piKindConfig struct {
+    id, displayName string
+    sessionFlag     string // pi: --session-id；omp: --resume
+    readOnlyTools   string // pi: read,grep,find,ls；omp: read,grep,glob
+    defaultRel      []string // .pi/agent 或 .omp/agent
+    usageLabel      string
+}
+type PiAdapter struct { /* kind + scope → *piSession，并发安全 */ }
 type piSession struct {
-    cmd     *exec.Cmd            // pi --mode rpc --append-system-prompt &lt;p&gt; [--session-id &lt;id&gt;] [--extension &lt;ask_user.ts&gt;] [--tools ...]
+    cmd     *exec.Cmd            // &lt;pi|omp&gt; --mode rpc --append-system-prompt &lt;p&gt; [--session-id|--resume &lt;id&gt;] [--tools ...]
     stdin   io.Writer
-    pending map[int]chan response // id → 响应 channel（send 关联）
-    runChans map[string]chan Event // runId → 事件扇出
-    nextID  int
+    source  string               // "pi" | "omp"（EventAskUser.Source）
+    pending map[int]chan response
+    runChans map[string]chan Event
     // ...
 }
+
+func NewPiAdapter(binary) / NewOmpAdapter(binary) *PiAdapter
 
 func (s *piSession) send(cmd any) (response, error)
 // 分配 id → 写一行 JSONL 到 stdin → 等 pending[id]，15s 超时
 
 func (s *piSession) readLoop()
-// 逐行读 stdout：
+// 逐行读 stdout：忽略 ready / available_commands_update 等噪声
 //   带 id 的 response → 路由到 pending[id]
-//   事件（message_update.text_delta/thinking_delta、message_end.usage、
-//        tool_execution_start/end、agent_settled）→ 翻译成 Event 扇出到 runChans
-//   agent_settled（或错误）→ 发 Event{done} 并关闭该 run 的 channel
+//   事件（message_update、message_end.usage、tool_*、
+//        agent_settled|agent_end → EventDone；turn_end 忽略、
+//        extension_ui_request）→ 翻译成 Event 扇出到 runChans
 
 func (s *piSession) startRun(opts RunOptions) (Run, error)
-// get_state 拿 sessionId/current model；持久化模型变化时先 set_model，再发 prompt
-// prompt 图片以 base64 内嵌；message_end usage 进入运行卡统计
-// 返回 piRun；piRun.Stop() = 发 abort 命令（优雅，不杀进程）
+// get_state → 可选 set_model → prompt；图片 base64 内嵌
+// piRun.Stop() = abort（优雅；超时升级杀进程）
 
-func (a *PiAdapter) ListModels(ctx,cwd) // 临时 --no-session RPC：get_state + get_available_models
-func (a *PiAdapter) ReadUsage(ctx)      // 聚合 Pi session JSONL 的 token/cache/cost
-func (a *PiAdapter) ResetSession(scope string) error // /new → 杀常驻进程，下一轮新建会话</code></pre>
-<div class="note"><b>权限边界：</b>Pi read-only 以 <code>--tools read,grep,find,ls</code> 移除 shell、写文件和扩展工具；full/workspace 保持 Pi 原生工具集。Pi 没有进程级 sandbox，workspace 不能阻止 bash 访问工作区外路径。</div>
-<div class="note"><b>反问扩展（ask_user）：</b>Pi 无内置提问工具，反问能力由社区扩展 <code>npm:pi-ask-user</code> 提供（<code>pi install</code> 写入 <code>~/.pi/agent/settings.json</code> 的 packages，pi 启动时自动加载；RPC 模式下降级为 <code>ctx.ui.select/input</code>，与 bridge 适配层兼容）。模型调用 <code>ask_user</code> 工具 → pi 发 <code>extension_ui_request</code>(select/input) → bridge 转飞书 ask 卡（ADR-0008）。bridge 不再内置/注入扩展（曾用 <code>-e</code> 内置版，2026-08-04 改为社区包，避免重复维护）。read-only 的 <code>--tools</code> allowlist 排除扩展工具。</div>
+func (a *PiAdapter) ListModels(ctx,cwd) // 临时 --no-session RPC
+func (a *PiAdapter) ReadUsage(ctx)      // 扫 kind 默认 sessions 树的 JSONL
+func (a *PiAdapter) ResetSession(scope string) // /new → 杀常驻进程</code></pre>
+<div class="note"><b>权限边界：</b>Pi read-only 以 <code>--tools read,grep,find,ls</code>；omp 以 <code>--tools read,grep,glob</code>（不得照搬 find/ls，omp 会启动失败）。full/workspace 保持各 CLI 原生工具集。无进程级 sandbox。</div>
+<div class="note"><b>反问：</b>Pi 依赖社区扩展 <code>npm:pi-ask-user</code>（<code>~/.pi/agent/settings.json</code> packages）；omp 内置 <code>ask</code> 工具，通常不必装扩展。两者均经 <code>extension_ui_request</code>(select/input/confirm/editor) → 飞书 ask 卡（ADR-0008）。read-only allowlist 会去掉扩展工具（Pi）及非只读内置工具。</div>
 
 <h3>3.4 OpenCodeAdapter / ocServer <span class="file">internal/agent/opencode.go</span>（常驻 HTTP+SSE，每 profile 一 server）</h3>
 <pre><code>type OpenCodeAdapter struct { server *ocServer /* 每 profile 一个 */ }
@@ -348,17 +357,52 @@ func translate(ocEvent) []Event
 <div class="note"><b>权限边界：</b>OpenCode 的 profile access 通过原生工具 permission 规则实现：full 全允许；workspace 允许工作区编辑、shell/网络询问、外部目录拒绝；read-only 拒绝 edit/bash/外部目录。它提供与 Codex 一致的产品选择，但不是 OS 进程级 sandbox。</div>
 <div class="note"><b>选 serve 而非 ACP 的原因（与实现直接相关）：</b>单进程多 session 是一等公民（<code>sessions</code> 映射 + 按工作目录的 SSE 流按 sessionID 扇出）、有 <code>/global/health</code> 做存活探测、事件粒度更细（part 级 delta 与工具全生命周期）。会话由 opencode 磁盘持久化，bridge 重启后凭 sessionID 续聊。</div>
 
-<h3>3.5 acpClient <span class="file">internal/agent/acp.go</span>（保留的迁移路径，当前未接线）</h3>
-<pre><code>type acpClient struct { /* JSON-RPC over stdio */ }
+<h3>3.5 GrokAdapter / acpClient <span class="file">internal/agent/grok.go</span> · <span class="file">internal/agent/acp.go</span>（ADR-0020）</h3>
+<pre><code>// Grok 主路径：每 scope 常驻 `grok agent [--always-approve] stdio`
+// session/new|load → session/prompt；session/update → Event 流
+// reverse RPC `_x.ai/ask_user_question` → EventAskUser → 飞书卡
+//   应答：{"outcome":"accepted","answers":{q: string|[]string}} 或 {"outcome":"cancelled"}
+// headless stream-json 无 client 通道，无法应答 ask（运行时不使用）
 
-func (c *acpClient) call(method string, params any) (json.RawMessage, error) // 请求-响应
-func (c *acpClient) notify(method string, params any)                         // 单向通知
-func (c *acpClient) readLoop()   // 响应路由 + session/update 事件翻译
-func (c *acpClient) respond(id, result) // 回应 agent 侧请求
+type GrokAdapter struct {
+    sessions map[string]*grokSession // scope → ACP 进程
+}
+func (a *GrokAdapter) Run(opts) (Run, error) // ensure process + session + prompt
+func (a *GrokAdapter) ResetSession(scope)    // /new /cd 杀进程
 
-// 覆盖协议面：initialize / session/new / session/prompt / session/cancel
+type acpClient struct { /* JSON-RPC over stdio */ }
+func startACPLike(..., onUpdate, onReverse) // initialize + 读环路
+func (c *acpClient) sessionNew / sessionLoad / sessionPrompt / sessionCancel
 func autoAllowPermission(req) resp  // request_permission 自动放行（优先 allow_always）
 func translateACPUpdate(u) []Event  // session/update → 统一 Event</code></pre>
+<div class="note"><b>access：</b><code>full</code> 启动 <code>--always-approve</code> + session <code>_meta.yoloMode</code>；<code>workspace</code>/<code>read-only</code> 不 yolo（权限请求仍 auto-allow，本轮不做飞书权限卡）。Grok <code>/model</code> 与 <code>/usage</code> 尚未接线。</div>
+
+<h3>3.6 CursorAdapter / acpClient <span class="file">internal/agent/cursor.go</span> · <span class="file">internal/agent/acp.go</span>（ADR-0022）</h3>
+<pre><code>// Cursor 主路径：每 scope 常驻 `&lt;cursor-agent|verified agent&gt; acp`
+// initialize → 可选 authenticate(cursor_login) → session/new|load → session/prompt
+// session/update → Event 流；session/request_permission 自动放行
+// reverse RPC `cursor/ask_question` → EventAskUser(Source=cursor)
+//   应答：{"outcome":{"outcome":"answered","answers":[{questionId,selectedOptionIds}]}}
+//         或 {"outcome":{"outcome":"cancelled"}}（官方嵌套信封，禁止扁平 outcome）
+// `cursor/create_plan` 及其它阻塞 cursor/* → 立即嵌套 cancelled，避免默认回合挂死
+// print stream-json 翻译器（translateCursorLine / cursorPrintArgs）仅供单测与文档
+
+type CursorAdapter struct {
+    sessions map[string]*cursorSession // scope → ACP 进程
+}
+func NewCursorAdapter(binary) *CursorAdapter // 空 binary 时 spawn 再 ResolveCursorBinary
+func (a *CursorAdapter) Run(opts) (Run, error)
+func (a *CursorAdapter) ResetSession(scope)
+
+func ResolveCursorBinary() string     // cursor-agent 优先；agent 必须 LookLikeCursorCLI
+func LookLikeCursorCLI(path) bool     // 拒绝 /.grok/ 与 Grok --version/--help
+func cursorACPArgs() []string         // ["acp"]
+func cursorPrintArgs(opts) []string   // -p --output-format stream-json --force [--resume] [--model]
+func parseCursorAskParams / formatCursorAskAnswer
+func translateCursorLine(line) []Event // system.init / assistant / tool_call / result
+</code></pre>
+<div class="note"><b>二进制：</b>官方 Cursor 安装物也叫 <code>agent</code>。本机 <code>~/.local/bin/agent</code> 是 Grok。探测与 onboard <b>禁止</b>裸 <code>LookPath("agent")</code>。显式传入的测试假二进制不走探测。</div>
+<div class="note"><b>access / 能力边界：</b>权限请求 auto-allow；不做飞书权限卡。Cursor <code>/model</code>、<code>/usage</code>、Plan/Ask 斜杠命令、磁盘 session 扫描尚未接线。</div>
 
 <h2 id="s4"><span class="no">4</span>internal/bridge —— 消息中枢</h2>
 
@@ -545,8 +589,7 @@ func (s *RunState) TextContent() string          // 提取纯文本（用于终�
 <pre><code>func Render(state *RunState) map[string]any // RunState → CardKit 2.0 卡片 JSON
 // · thinking 块  → 折叠面板
 // · text 块      → markdown 元素
-// · tool_group   → detail 默认折叠（最新工具 / Task / Agent 也不强制展开）；
-//                  工具调用 ≥3 个时合并折叠历史，最新一个保留独立折叠面板
+// · tool_group   → 平铺一行摘要（不套折叠面板）；完整输出不进卡片
 // · 运行中 footer：当前动作 + 每秒 tick 的已运行时间 + ⏹ 终止按钮
 // · 终态 footer： 中断 / 超时 / 错误标注 + usage
 
@@ -640,8 +683,10 @@ func AcquireProfileLock(paths config.Paths, profile string) (*ProfileLock, error
 // 3. --check：只报告差异后返回
 // 4. git pull --ff-only（有未提交改动/分叉则失败，保护现场）
 // 5. go build 到目标同目录临时文件
-// 6. 新二进制 version 自检（冒烟）
-// 7. os.Rename 原子替换 → 提示重启运行中实例</code></pre>
+// 6. 若本机有 veightz-lark-bridge-codesign，codesign 稳定 identifier
+//    com.veightz.lark-coding-agent-bridge-go（避免每次重编被当成新 App）
+// 7. 新二进制 version 自检（冒烟）
+// 8. os.Rename 原子替换 → 提示重启运行中实例</code></pre>
 
 <h3>6.4 Lark 客户端 <span class="file">internal/lark/client.go</span></h3>
 <pre><code>type Client struct { /* oapi-sdk-go v3 lark.Client + cardkit */ }

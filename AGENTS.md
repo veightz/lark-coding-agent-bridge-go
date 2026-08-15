@@ -1,15 +1,15 @@
 # AGENTS.md — 给所有 coding agent 的入口说明
 
-任何 agent（Claude Code、Codex、pi、opencode、Kimi 等）接手本仓库前，先读完本文件，再按指针阅读 `docs/`。
+任何 agent（Claude Code、Codex、pi、omp、opencode、Grok、Kimi、Cursor 等）接手本仓库前，先读完本文件，再按指针阅读 `docs/`。
 
 ## 这个项目是什么
 
-飞书/Lark ↔ 本地 coding agent CLI 的桥接器（Go）。把聊天消息路由到本地 agent（claude / codex / pi / opencode），回复以 CardKit 流式卡片实时呈现。是 TS 项目 [lark-channel-bridge](https://github.com/zarazhangrui/lark-coding-agent-bridge) 的 Go 复刻增强版。
+飞书/Lark ↔ 本地 coding agent CLI 的桥接器（Go）。把聊天消息路由到本地 agent（claude / codex / pi / omp / opencode / grok / kimi / cursor），回复以 CardKit 流式卡片实时呈现。是 TS 项目 [lark-channel-bridge](https://github.com/zarazhangrui/lark-coding-agent-bridge) 的 Go 复刻增强版。
 
 ## 重点学习参考
 
 - **[deepcoldy/botmux](https://github.com/deepcoldy/botmux)**（**首选对照**）：飞书遥控 AI 编程 CLI 的成熟实现。本仓库在以下能力上重点对齐其设计与语义，而非照搬进程模型：
-  - **模型反问接管**：Claude `AskUserQuestion` / OpenCode `question` / Pi `extension_ui_request` → 飞书交互卡片 → 用户点选（或文字 freeform）后回填 agent（见 ADR-0008、`internal/ask`，对照 botmux `ask-broker` / `ask-card` / hook-installer）。
+  - **模型反问接管**：Claude `AskUserQuestion` / OpenCode `question` / Pi·omp `extension_ui_request` / Grok `ask_user_question`（ACP `_x.ai/ask_user_question`）/ Cursor `cursor/ask_question` → 飞书交互卡片 → 用户点选（或文字 freeform）后回填 agent（见 ADR-0008/0020/0021/0022、`internal/ask`，对照 botmux `ask-broker` / `ask-card` / hook-installer）。
   - **OpenCode 工具权限**（ADR-0011/0018）：profile access 在 server 启动时注入原生 permission 规则；需要确认的请求走飞书卡（允许一次 / 始终允许 / 拒绝）→ `POST /permission/{id}/reply`。
   - 卡片回调、超时 settle、daemon 不可达时 passthrough 降级等产品细节。
   - 文档入口：botmux README、`docs/TEST-GUIDE-ask-hooks.md`、源码 `src/core/ask-*.ts`、`src/im/lark/ask-card.ts`。
@@ -33,6 +33,8 @@ go build ./...                 # 编译
 go test ./...                  # 全部测试（必须全绿）
 go vet ./... && gofmt -l .     # 静态检查（必须无输出）
 go build -o bin/lark-coding-agent-bridge-go ./cmd/lark-coding-agent-bridge-go
+# 本机若有 veightz-lark-bridge-codesign，构建后应 codesign 稳定 identifier，
+# 否则每次重编都会再弹 Downloads / 后台活动授权。
 ```
 
 CLI：`run`（默认）/ `dashboard` / `upgrade [--check]` / `version`。
@@ -45,7 +47,7 @@ internal/
   onboard/      扫码注册向导（registerApp 协议复刻）
   config/       根配置 + 路径布局（~/.lark-coding-agent-bridge/）
   state/        会话 / 工作区 / 绑定 JSON 存储
-  agent/        四种 agent 适配器 + ACP client（预留）
+  agent/        多 agent 适配器 + ACP client（Grok 主路径，ADR-0020）
   ask/          模型反问 broker + 飞书 ask 卡片 + Claude hook IPC（ADR-0008，对标 botmux）
   lark/         OpenAPI 封装（WS、REST、cardkit、附件）
   card/         运行状态机 + 卡片渲染 + 流式更新
@@ -77,5 +79,8 @@ docs/
 Pi 的 notify/setStatus 等 fire-and-forget UI 不弹卡；Claude 工具级权限仍走 access mode（不做飞书审批卡）；
 Codex 反问与权限确认已通过 app-server 接管（ADR-0014）；OpenCode 工具权限、自由文本反问、模型/用量和跨项目会话已接管（ADR-0011/0018）。
 Pi 的模型热切换、本地用量统计和 read-only 工具 allowlist 已接管（ADR-0019）；Pi workspace 不是 OS sandbox。
+Oh My Pi（`omp`）复用 Pi RPC 事件协议，独立 `agentKind=omp`：续会话用 `--resume`、默认会话树 `~/.omp/agent`、read-only 工具为 `read,grep,glob`（ADR-0021）；不与 `pi` 合并、不自动迁移会话。
+Grok 走 ACP `grok agent stdio`，反问经 `_x.ai/ask_user_question` 接管（ADR-0020）；Grok `/model`、`/usage` 与工具权限审批卡尚未实现。
+Cursor 走 ACP `cursor-agent acp`（或已校验的 Cursor `agent acp`），反问经 `cursor/ask_question` 接管（ADR-0022）；**禁止**把本机 Grok `~/.local/bin/agent` 当成 Cursor。Cursor `/model`、`/usage`、Plan/Ask 斜杠命令、磁盘 session 扫描尚未实现。
 访问控制（owner + `/invite`/`/remove` 白名单）见 ADR-0013。
 详见 `docs/adr/` 与 README「与原版的差异」。

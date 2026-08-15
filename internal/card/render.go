@@ -11,12 +11,8 @@ import (
 const cnyRate = 7.3 // approximate USD→CNY conversion rate for fallback
 
 const (
-	reasoningMax          = 1500
-	collapseToolThreshold = 3
-	headerSummaryMax      = 80
-	bodyFieldMax          = 600
-	outputMax             = 1200
-	bodyTotalMax          = 2500
+	reasoningMax     = 1500
+	headerSummaryMax = 80
 )
 
 // RenderOptions customizes the rendered card.
@@ -46,7 +42,7 @@ func Render(state *RunState, opts RenderOptions) map[string]any {
 				elements = append(elements, markdown(*group.text))
 			}
 		} else {
-			elements = append(elements, renderToolGroup(group.tools, state.Terminal != TerminalRunning)...)
+			elements = append(elements, renderToolGroup(group.tools)...)
 		}
 	}
 
@@ -141,55 +137,16 @@ func groupBlocks(blocks []Block) []blockGroup {
 	return groups
 }
 
-func renderToolGroup(tools []*ToolEntry, finalized bool) []map[string]any {
+func renderToolGroup(tools []*ToolEntry) []map[string]any {
 	if len(tools) == 0 {
 		return nil
 	}
-	if len(tools) < collapseToolThreshold {
-		out := make([]map[string]any, 0, len(tools))
-		for _, t := range tools {
-			out = append(out, toolPanel(t, false))
-		}
-		return out
-	}
-	if finalized {
-		return []map[string]any{collapsedToolSummary(tools, true)}
-	}
-	// 最新工具也保持折叠，避免心跳整卡刷新时 bash 输出把卡片越撑越高。
-	out := []map[string]any{collapsedToolSummary(tools[:len(tools)-1], false)}
-	out = append(out, toolPanel(tools[len(tools)-1], false))
-	return out
-}
-
-func toolPanel(tool *ToolEntry, expanded bool) map[string]any {
-	border := "grey"
-	if tool.Status == ToolError {
-		border = "red"
-	}
-	body := toolBodyMd(tool)
-	if body == "" {
-		body = "_无输出_"
-	}
-	return collapsiblePanel(toolHeaderText(tool), expanded, border, body)
-}
-
-func collapsedToolSummary(tools []*ToolEntry, finalized bool) map[string]any {
-	suffix := ""
-	if finalized {
-		suffix = "（已结束）"
-	}
-	title := "☕ **" + itoa(len(tools)) + " 个工具调用" + suffix + "**"
-	var lines []string
+	// 只平铺一行摘要。套折叠面板会挡住这几行已经足够短的信息。
+	lines := make([]string, 0, len(tools))
 	for _, t := range tools {
-		lines = append(lines, "- "+toolHeaderText(t))
+		lines = append(lines, toolHeaderText(t))
 	}
-	return map[string]any{
-		"tag":      "collapsible_panel",
-		"expanded": false,
-		"header":   panelHeader(title),
-		"border":   map[string]any{"color": "blue", "corner_radius": "5px"},
-		"elements": []map[string]any{notationMd(strings.Join(lines, "\n"))},
-	}
+	return []map[string]any{noteMd(strings.Join(lines, "\n"))}
 }
 
 func collapsiblePanel(title string, expanded bool, border, body string) map[string]any {
@@ -445,7 +402,7 @@ func formatRunStats(dur string, stats *RunStats) string {
 	return summary
 }
 
-// ─── tool body rendering (ported from tool-render.ts) ─────────────
+// ─── tool header ────────────────────────────────────────────────
 
 func toolHeaderText(tool *ToolEntry) string {
 	icon := "⏳"
@@ -459,38 +416,6 @@ func toolHeaderText(tool *ToolEntry) string {
 		return icon + " **" + tool.Name + "** — " + summary
 	}
 	return icon + " **" + tool.Name + "**"
-}
-
-func toolBodyMd(tool *ToolEntry) string {
-	var parts []string
-	if inputMd := renderInput(tool); inputMd != "" {
-		parts = append(parts, inputMd)
-	}
-	om := outputMax
-	btm := bodyTotalMax
-	if tool.Name == "Task" || tool.Name == "Agent" {
-		om = outputMax * 3
-		btm = bodyTotalMax * 3
-	}
-	if tool.Output != "" {
-		truncated := truncate(tool.Output, om)
-		if tool.Status == ToolError {
-			parts = append(parts, "**Error**\n```\n"+truncated+"\n```")
-		} else {
-			parts = append(parts, "**Output**\n```\n"+truncated+"\n```")
-		}
-	} else if tool.Status == ToolRunning {
-		suffix := ""
-		if tool.DurationMs > 0 {
-			suffix = "（" + formatDuration(tool.DurationMs) + "）"
-		}
-		parts = append(parts, "_运行中…"+suffix+"_")
-	}
-	body := strings.Join(parts, "\n\n")
-	if len(body) <= btm {
-		return body
-	}
-	return body[:btm] + "…\n\n_（body 已截断）_"
 }
 
 func inputString(input any, key string, max int) string {
@@ -546,38 +471,6 @@ func summarizeInput(name string, input any) string {
 	}
 }
 
-func renderInput(tool *ToolEntry) string {
-	str := func(k string) string { return inputString(tool.Input, k, 1<<30) }
-	switch tool.Name {
-	case "Bash", "command_execution":
-		if cmd := str("command"); cmd != "" {
-			return "**Command**\n```bash\n" + truncate(cmd, bodyFieldMax) + "\n```"
-		}
-	case "Read", "Edit", "Write", "NotebookEdit":
-		if fp := str("file_path"); fp != "" {
-			return "**File** `" + fp + "`"
-		}
-	case "Grep":
-		var lines []string
-		if p := str("pattern"); p != "" {
-			lines = append(lines, "**Pattern** `"+p+"`")
-		}
-		if p := str("path"); p != "" {
-			lines = append(lines, "**Path** `"+p+"`")
-		}
-		return strings.Join(lines, "\n")
-	case "WebFetch":
-		if u := str("url"); u != "" {
-			return "**URL** " + u
-		}
-	case "WebSearch":
-		if q := str("query"); q != "" {
-			return "**Query** " + truncate(q, bodyFieldMax)
-		}
-	}
-	return ""
-}
-
 // ─── helpers ──────────────────────────────────────────────────────
 
 func truncate(s string, max int) string {
@@ -585,20 +478,6 @@ func truncate(s string, max int) string {
 		return s[:max] + "…"
 	}
 	return s
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [8]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
 }
 
 // emailRe matches email addresses for masking. Feishu's tenant audit

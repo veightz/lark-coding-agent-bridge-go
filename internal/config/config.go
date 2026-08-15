@@ -34,9 +34,11 @@ const (
 	AgentClaude   AgentKind = "claude"
 	AgentCodex    AgentKind = "codex"
 	AgentPi       AgentKind = "pi"
+	AgentOmp      AgentKind = "omp" // Oh My Pi（Pi fork；RPC 子集，见 ADR-0021）
 	AgentOpenCode AgentKind = "opencode"
 	AgentGrok     AgentKind = "grok"
 	AgentKimi     AgentKind = "kimi"
+	AgentCursor   AgentKind = "cursor" // Cursor CLI（ACP 主路径，见 ADR-0022）
 )
 
 // AccessLevel mirrors the original bridge's permission modes.

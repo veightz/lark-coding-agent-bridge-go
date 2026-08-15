@@ -1,9 +1,10 @@
-// PiAdapter drives the pi coding agent (pi-coding-agent) over its native
-// RPC mode: one persistent `pi --mode rpc` process per chat scope, JSONL
-// commands on stdin, streaming events on stdout. This is pi's native
-// machine interface — no scraping, full streaming, graceful abort.
+// PiAdapter drives pi-family coding agents over native RPC mode: one
+// persistent `--mode rpc` process per chat scope, JSONL commands on stdin,
+// streaming events on stdout. Used for upstream pi and Oh My Pi (omp), which
+// share the event protocol (ADR-0021); CLI flags and session paths differ via
+// piKindConfig.
 //
-// Protocol: docs/rpc.md in the pi-coding-agent package.
+// Protocol: docs/rpc.md in the pi-coding-agent package (omp is a compatible subset).
 package agent
 
 import (
@@ -22,11 +23,46 @@ import (
 	"lark-coding-agent-bridge-go/internal/config"
 )
 
+// piKindConfig captures CLI differences between upstream pi and Oh My Pi.
+// Event translation and RPC commands stay shared.
+type piKindConfig struct {
+	id            string   // agent.ID / EventAskUser.Source
+	displayName   string   // human label
+	sessionFlag   string   // "--session-id" (pi) | "--resume" (omp)
+	readOnlyTools string   // comma-separated --tools for AccessReadOnly
+	defaultRel    []string // path under $HOME when PI_CODING_AGENT_DIR unset
+	usageLabel    string   // UsageSnapshot.Provider
+}
+
+func piKind() piKindConfig {
+	return piKindConfig{
+		id:            "pi",
+		displayName:   "Pi",
+		sessionFlag:   "--session-id",
+		readOnlyTools: "read,grep,find,ls",
+		defaultRel:    []string{".pi", "agent"},
+		usageLabel:    "Pi（本机会话）",
+	}
+}
+
+func ompKind() piKindConfig {
+	// 本机 omp v17：无 --session-id；默认 ~/.omp/agent；合法工具无 find/ls，有 glob。
+	return piKindConfig{
+		id:            "omp",
+		displayName:   "Oh My Pi",
+		sessionFlag:   "--resume",
+		readOnlyTools: "read,grep,glob",
+		defaultRel:    []string{".omp", "agent"},
+		usageLabel:    "Oh My Pi（本机会话）",
+	}
+}
+
 // PiAdapter keeps one RPC process per scope (keyed with cwd, so /cd
-// respawns). Session continuity survives bridge restarts via pi's own
-// --session-id project sessions.
+// respawns). Session continuity survives bridge restarts via the kind's
+// session resume flag (pi --session-id / omp --resume).
 type PiAdapter struct {
 	binary      string
+	kind        piKindConfig
 	botIdentity *BotIdentity
 	runtime     config.AgentRuntime
 	// Env injected into every child (lark-cli context etc.).
@@ -41,11 +77,35 @@ func NewPiAdapter(binary string) *PiAdapter {
 	if binary == "" {
 		binary = "pi"
 	}
-	return &PiAdapter{binary: binary, sessions: map[string]*piSession{}}
+	return &PiAdapter{binary: binary, kind: piKind(), sessions: map[string]*piSession{}}
 }
 
-func (a *PiAdapter) ID() string          { return "pi" }
-func (a *PiAdapter) DisplayName() string { return "Pi" }
+// NewOmpAdapter builds an adapter for Oh My Pi (omp), reusing Pi RPC wiring.
+func NewOmpAdapter(binary string) *PiAdapter {
+	if binary == "" {
+		binary = "omp"
+	}
+	return &PiAdapter{binary: binary, kind: ompKind(), sessions: map[string]*piSession{}}
+}
+
+func (a *PiAdapter) ID() string {
+	if a.kind.id != "" {
+		return a.kind.id
+	}
+	return "pi"
+}
+func (a *PiAdapter) DisplayName() string {
+	if a.kind.displayName != "" {
+		return a.kind.displayName
+	}
+	return "Pi"
+}
+func (a *PiAdapter) kindOrDefault() piKindConfig {
+	if a.kind.id != "" {
+		return a.kind
+	}
+	return piKind()
+}
 
 func (a *PiAdapter) SetBotIdentity(id BotIdentity) { a.botIdentity = &id }
 
@@ -116,14 +176,17 @@ func (a *PiAdapter) spawn(opts RunOptions) (*piSession, error) {
 	if err != nil {
 		return nil, err
 	}
+	k := a.kindOrDefault()
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to spawn pi: %w", err)
+		return nil, fmt.Errorf("failed to spawn %s: %w", k.id, err)
 	}
 
 	ps := &piSession{
 		cmd:      cmd,
 		stdin:    stdin,
 		cwd:      opts.Cwd,
+		source:   k.id,
+		label:    k.displayName,
 		pending:  map[string]chan piResponse{},
 		runChans: map[uint64]*piRunSlot{},
 	}
@@ -138,7 +201,7 @@ func (a *PiAdapter) spawn(opts RunOptions) (*piSession, error) {
 			delete(ps.pending, id)
 		}
 		for id, slot := range ps.runChans {
-			safeSend(slot.ch, Event{Type: EventError, Message: "pi 进程意外退出", TerminationReason: TermFailed})
+			safeSend(slot.ch, Event{Type: EventError, Message: k.displayName + " 进程意外退出", TerminationReason: TermFailed})
 			ps.closeSlotLocked(id, slot)
 		}
 		ps.mu.Unlock()
@@ -146,29 +209,48 @@ func (a *PiAdapter) spawn(opts RunOptions) (*piSession, error) {
 	return ps, nil
 }
 
-// piArgs 组装 pi RPC 启动参数。
-// 反问能力（ask_user 工具）由全局安装的社区扩展 npm:pi-ask-user 提供
-// （~/.pi/agent/settings.json 的 packages 列表，pi 启动时自动加载），
-// bridge 不再内置/注入扩展；extension_ui_request 的飞书适配见 internal/ask。
+// piArgs 组装 RPC 启动参数（pi / omp 共用，差异由 kind 表达）。
+// Pi 反问依赖社区扩展 npm:pi-ask-user；omp 内置 ask 工具，亦可走 Extension UI。
+// extension_ui_request 的飞书适配见 internal/ask。
 func (a *PiAdapter) piArgs(opts RunOptions) []string {
+	k := a.kindOrDefault()
 	args := []string{"--mode", "rpc", "--append-system-prompt", BuildSystemPrompt(a.botIdentity)}
 	if opts.SessionID != "" {
-		args = append(args, "--session-id", opts.SessionID)
+		// pi: --session-id；omp: --resume（omp 无 --session-id，传了会启动失败）
+		flag := k.sessionFlag
+		if flag == "" {
+			flag = "--session-id"
+		}
+		args = append(args, flag, opts.SessionID)
 	}
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
 	}
-	args = append(args, piAccessArgs(opts.Access)...)
+	args = append(args, a.accessArgs(opts.Access)...)
 	return args
 }
 
-func piAccessArgs(access config.AccessLevel) []string {
+func (a *PiAdapter) accessArgs(access config.AccessLevel) []string {
 	if access != config.AccessReadOnly {
 		return nil
 	}
-	// Pi 没有进程级 sandbox；只读 profile 至少从源头移除 shell、写文件和
-	// 扩展工具。read/grep/find/ls 是 Pi 0.83 的内置只读工具集合。
-	return []string{"--tools", "read,grep,find,ls"}
+	// 无进程级 sandbox；只读 profile 用工具 allowlist 去掉 shell / 写文件。
+	// 工具名表按 kind 区分：pi 用 find/ls，omp 用 glob（见 ADR-0019/0021）。
+	tools := a.kindOrDefault().readOnlyTools
+	if tools == "" {
+		tools = "read,grep,find,ls"
+	}
+	return []string{"--tools", tools}
+}
+
+// piAccessArgs 保留给既有单测；等价于 NewPiAdapter("").accessArgs。
+func piAccessArgs(access config.AccessLevel) []string {
+	return NewPiAdapter("").accessArgs(access)
+}
+
+// ompAccessArgs 是 omp 的只读工具 allowlist（单测 / 静态检查用）。
+func ompAccessArgs(access config.AccessLevel) []string {
+	return NewOmpAdapter("").accessArgs(access)
 }
 
 // ─── piSession: one RPC process ────────────────────────────────────
@@ -184,6 +266,9 @@ type piSession struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
 	cwd   string
+	// source / label 来自 adapter kind（"pi" | "omp"），用于 ask 卡与错误文案。
+	source string
+	label  string
 
 	writeMu  sync.Mutex // serializes stdin writes
 	mu       sync.Mutex // guards the fields below
@@ -199,6 +284,13 @@ type piSession struct {
 	// from the RPC get_state/set_model response so ctx% can use the
 	// agent-reported value instead of only the static pricing table.
 	contextWindow int
+}
+
+func (ps *piSession) agentLabel() string {
+	if ps.label != "" {
+		return ps.label
+	}
+	return "Pi"
 }
 
 // piRunSlot bundles a run's event channel with a settled signal that
@@ -249,7 +341,7 @@ func (ps *piSession) send(cmd map[string]any, wantResponse bool) (piResponse, er
 
 	if dead {
 		ps.dropPending(id)
-		return piResponse{}, fmt.Errorf("pi 进程已退出")
+		return piResponse{}, fmt.Errorf("%s 进程已退出", ps.agentLabel())
 	}
 
 	data, err := json.Marshal(cmd)
@@ -264,7 +356,7 @@ func (ps *piSession) send(cmd map[string]any, wantResponse bool) (piResponse, er
 	ps.writeMu.Unlock()
 	if err != nil {
 		ps.dropPending(id)
-		return piResponse{}, fmt.Errorf("写入 pi 进程失败: %w", err)
+		return piResponse{}, fmt.Errorf("写入 %s 进程失败: %w", ps.agentLabel(), err)
 	}
 
 	if !wantResponse {
@@ -273,12 +365,12 @@ func (ps *piSession) send(cmd map[string]any, wantResponse bool) (piResponse, er
 	select {
 	case resp, ok := <-ch:
 		if !ok {
-			return piResponse{}, fmt.Errorf("pi 进程意外退出")
+			return piResponse{}, fmt.Errorf("%s 进程意外退出", ps.agentLabel())
 		}
 		return resp, nil
 	case <-time.After(15 * time.Second):
 		ps.dropPending(id)
-		return piResponse{}, fmt.Errorf("pi 命令 %v 响应超时", cmd["type"])
+		return piResponse{}, fmt.Errorf("%s 命令 %v 响应超时", ps.agentLabel(), cmd["type"])
 	}
 }
 
@@ -333,7 +425,7 @@ func (ps *piSession) readLoop(stdout io.Reader) {
 			resp.Data, _ = raw["data"].(map[string]any)
 			resp.Success, _ = raw["success"].(bool)
 			if !resp.Success {
-				resp.Error = errorMessage(raw, "pi command failed")
+				resp.Error = errorMessage(raw, ps.agentLabel()+" command failed")
 			}
 			ps.mu.Lock()
 			if ch := ps.pending[id]; ch != nil {
@@ -406,7 +498,7 @@ func (ps *piSession) startRun(opts RunOptions) (Run, error) {
 			if err != nil {
 				return nil, err
 			}
-			return nil, fmt.Errorf("读取 Pi 会话状态失败: %s", resp.Error)
+			return nil, fmt.Errorf("读取 %s 会话状态失败: %s", ps.agentLabel(), resp.Error)
 		}
 	}
 	if opts.Model != "" {
@@ -424,7 +516,7 @@ func (ps *piSession) startRun(opts RunOptions) (Run, error) {
 	modelID := ps.modelID
 	contextWindow := ps.contextWindow
 	ch := slot.ch
-	// 在 prompt 交给 Pi 前先入队 system 事件，保证事件顺序稳定，也避免
+	// 在 prompt 交给 agent 前先入队 system 事件，保证事件顺序稳定，也避免
 	// agent_settled 抢先关闭 channel 后再补发 system 的 send/close 竞态。
 	if sessionID != "" || modelID != "" {
 		ch <- Event{Type: EventSystem, SessionID: sessionID, Model: modelID, ContextWindow: contextWindow}
@@ -440,7 +532,7 @@ func (ps *piSession) startRun(opts RunOptions) (Run, error) {
 		for _, path := range opts.Images {
 			img, err := encodeImage(path)
 			if err != nil {
-				log.Printf("[pi] image %s: %v", path, err)
+				log.Printf("[%s] image %s: %v", ps.source, path, err)
 				continue
 			}
 			images = append(images, img)
@@ -475,7 +567,7 @@ func (ps *piSession) ensureModel(want string) error {
 	}
 	provider, modelID, ok := parsePiModelRef(want)
 	if !ok {
-		return fmt.Errorf("Pi 模型 %q 缺少 provider 前缀，请重新发送 /model", want)
+		return fmt.Errorf("%s 模型 %q 缺少 provider 前缀，请重新发送 /model", ps.agentLabel(), want)
 	}
 	resp, err := ps.send(map[string]any{
 		"type":     "set_model",
@@ -486,7 +578,7 @@ func (ps *piSession) ensureModel(want string) error {
 		return err
 	}
 	if !resp.Success {
-		return fmt.Errorf("切换 Pi 模型失败: %s", resp.Error)
+		return fmt.Errorf("切换 %s 模型失败: %s", ps.agentLabel(), resp.Error)
 	}
 	applied := piModelFullID(resp.Data)
 	if applied == "" {
@@ -514,7 +606,7 @@ func (r *piRun) Stop() {
 			case <-r.settled:
 				// 优雅中止成功
 			case <-timer.C:
-				log.Printf("[pi] abort %s 未生效，升级杀进程", abortGrace)
+				log.Printf("[%s] abort %s 未生效，升级杀进程", r.ps.source, abortGrace)
 				r.ps.kill()
 			}
 		}()
@@ -599,7 +691,10 @@ func translatePiEvent(raw map[string]any) []Event {
 			// setStatus / setWidget / setTitle / set_editor_text: ignore
 			return nil
 		}
-	case "agent_settled":
+	// pi 发 agent_settled；omp v17 发 agent_end（isTerminal）作为整轮结束。
+	// 切勿把 turn_end 映射为 Done：多工具循环里会 mid-turn 出现
+	// tool → turn_end → turn_start → text → … → agent_end，过早关 channel 会丢后续文本。
+	case "agent_settled", "agent_end":
 		return []Event{{Type: EventDone, TerminationReason: TermNormal}}
 	}
 	return nil
@@ -676,12 +771,16 @@ func (ps *piSession) translatePiUIRequest(raw map[string]any) []Event {
 		return nil
 	}
 
+	src := ps.source
+	if src == "" {
+		src = "pi"
+	}
 	return []Event{{
 		Type:      EventAskUser,
 		AskID:     id,
 		Questions: questions,
 		Freeform:  freeform,
-		Source:    "pi",
+		Source:    src,
 		Reply: func(answers [][]string, cancelled bool) error {
 			return ps.replyExtensionUI(id, method, answers, cancelled)
 		},

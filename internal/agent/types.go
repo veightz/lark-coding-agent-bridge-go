@@ -85,7 +85,7 @@ type Event struct {
 	// Freeform allows the user to answer by typing in chat (pi input/editor).
 	Freeform bool
 	// Source tags the origin for card chrome
-	// ("opencode" | "opencode-permission" | "pi" | …).
+	// ("opencode" | "opencode-permission" | "pi" | "omp" | …).
 	Source string
 	// Reply posts the chosen answers back into the agent (in-process only).
 	// Nil for hook-originated asks handled outside the event stream.
@@ -110,7 +110,7 @@ type RunOptions struct {
 	Scope       string // chat scope; persistent adapters key processes by it
 	Prompt      string
 	Cwd         string
-	SessionID   string // claude --resume / pi --session-id
+	SessionID   string // claude --resume / pi --session-id / omp --resume
 	ThreadID    string // codex resume
 	Model       string
 	Images      []string
@@ -247,14 +247,25 @@ func NewAdapter(kind config.AgentKind, runtimes ...config.AgentRuntime) Adapter 
 		a := NewPiAdapter("pi")
 		a.runtime = runtime
 		return a
+	case config.AgentOmp:
+		// Oh My Pi：复用 Pi RPC 事件协议，差异见 piKindConfig / ADR-0021。
+		a := NewOmpAdapter("omp")
+		a.runtime = runtime
+		return a
 	case config.AgentOpenCode:
 		a := NewOpenCodeAdapter("opencode")
 		a.runtime = runtime
 		return a
 	case config.AgentGrok:
-		return &GrokAdapter{binary: "grok", runtime: runtime}
+		a := NewGrokAdapter("grok")
+		a.runtime = runtime
+		return a
 	case config.AgentKimi:
 		return &KimiAdapter{binary: "kimi", runtime: runtime}
+	case config.AgentCursor:
+		a := NewCursorAdapter("")
+		a.runtime = runtime
+		return a
 	default:
 		return &ClaudeAdapter{binary: "claude", runtime: runtime}
 	}

@@ -45,6 +45,8 @@ func ListSessions(kind config.AgentKind, limit int) ([]ExternalSession, error) {
 		return scanClaudeSessions(limit)
 	case config.AgentPi:
 		return scanPiSessions(limit)
+	case config.AgentOmp:
+		return scanOmpSessions(limit)
 	case config.AgentCodex:
 		return scanCodexSessions(limit)
 	}
@@ -199,7 +201,18 @@ func extractClaudeText(content any) string {
 // ─── pi: ~/.pi/agent/sessions/*/*.jsonl ────────────────────────────
 
 func scanPiSessions(limit int) ([]ExternalSession, error) {
-	files, err := collectJSONL(piSessionsDir(nil), 2)
+	return scanPiFamilySessions(piSessionsDir(nil), config.AgentPi, limit)
+}
+
+// ─── omp (Oh My Pi): ~/.omp/agent/sessions/*/*.jsonl ───────────────
+
+func scanOmpSessions(limit int) ([]ExternalSession, error) {
+	return scanPiFamilySessions(ompSessionsDir(nil), config.AgentOmp, limit)
+}
+
+// scanPiFamilySessions reads session v3 JSONL under root (shared by pi / omp).
+func scanPiFamilySessions(root string, agent config.AgentKind, limit int) ([]ExternalSession, error) {
+	files, err := collectJSONL(root, 2)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +221,7 @@ func scanPiSessions(limit int) ([]ExternalSession, error) {
 		if limit > 0 && len(out) >= limit {
 			break
 		}
-		sess := ExternalSession{Agent: config.AgentPi, UpdatedAt: f.mtime}
+		sess := ExternalSession{Agent: agent, UpdatedAt: f.mtime}
 		scanJSONLLines(f.path, 80, func(m map[string]any) bool {
 			if m["type"] == "session" {
 				sess.ID, _ = m["id"].(string)

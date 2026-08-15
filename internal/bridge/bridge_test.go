@@ -176,6 +176,23 @@ func TestConfigureClaudeAskRunOptionsDoesNotLeakIntoCodex(t *testing.T) {
 	}
 }
 
+func TestConfigureClaudeAskRunOptionsDoesNotLeakIntoGrok(t *testing.T) {
+	first := &Message{MessageID: "om_1", ChatID: "oc_1"}
+	opts := agent.RunOptions{}
+	configureClaudeAskRunOptions(
+		&opts,
+		config.AgentGrok,
+		"http://127.0.0.1:1234",
+		config.Paths{Home: t.TempDir()},
+		"grok-dev",
+		"scope-1",
+		first,
+	)
+	if len(opts.ExtraArgs) != 0 || len(opts.Env) != 0 {
+		t.Fatalf("Grok received Claude hook options: %+v", opts)
+	}
+}
+
 func TestConfigureClaudeAskRunOptionsForClaude(t *testing.T) {
 	first := &Message{MessageID: "om_1", ChatID: "oc_1"}
 	opts := agent.RunOptions{}

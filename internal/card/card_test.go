@@ -233,45 +233,52 @@ func TestToolGrouping(t *testing.T) {
 	for i, name := range []string{"Bash", "Read", "Grep", "Glob"} {
 		s = s.Reduce(agent.Event{Type: agent.EventToolUse, ID: string(rune('a' + i)), Name: name, Input: map[string]any{"command": "x"}})
 	}
-	// 4 tools while running: collapsed summary + latest folded panel
+	// 4 tools while running: one flat list of headers, no fold button
 	s.Stats.DurationMs = 12300
 	cardJSON := Render(s, RenderOptions{})
 	elements := cardJSON["body"].(map[string]any)["elements"].([]map[string]any)
-	var panels int
-	var sawLiveStatus bool
+	var sawTools, sawLiveStatus bool
 	for _, el := range elements {
 		if el["tag"] == "collapsible_panel" {
-			panels++
-			if expanded, _ := el["expanded"].(bool); expanded {
-				t.Errorf("running tool detail should default to folded: %#v", el)
-			}
+			t.Errorf("tool calls should be flat text, not a panel: %#v", el)
 		}
-		if content, _ := el["content"].(string); strings.Contains(content, "Glob") && strings.Contains(content, "12.3s") {
+		content, _ := el["content"].(string)
+		if strings.Contains(content, "个工具调用") {
+			t.Errorf("tool list should not use the old summary title: %q", content)
+		}
+		if strings.Contains(content, "**Bash**") && strings.Contains(content, "**Glob**") {
+			sawTools = true
+		}
+		if strings.Contains(content, "Glob") && strings.Contains(content, "12.3s") {
 			sawLiveStatus = true
 		}
 	}
-	if panels != 2 {
-		t.Errorf("running with 4 tools: panels = %d, want 2", panels)
+	if !sawTools {
+		t.Errorf("running tool list should include each tool header: %#v", elements)
 	}
 	if !sawLiveStatus {
 		t.Errorf("live tool status should include current action and ticking duration: %#v", elements)
 	}
 
-	// finalized: single collapsed summary
+	// finalized: still flat, no wrap-up panel
 	s = s.Reduce(agent.Event{Type: agent.EventDone, TerminationReason: agent.TermNormal})
 	elements = Render(s, RenderOptions{})["body"].(map[string]any)["elements"].([]map[string]any)
-	panels = 0
+	sawTools = false
 	for _, el := range elements {
 		if el["tag"] == "collapsible_panel" {
-			panels++
+			t.Errorf("finalized tool calls should stay flat: %#v", el)
+		}
+		content, _ := el["content"].(string)
+		if strings.Contains(content, "**Bash**") && strings.Contains(content, "**Glob**") {
+			sawTools = true
 		}
 	}
-	if panels != 1 {
-		t.Errorf("finalized with 4 tools: panels = %d, want 1", panels)
+	if !sawTools {
+		t.Errorf("finalized tool list should still include each tool header: %#v", elements)
 	}
 }
 
-func TestSubagentToolDetailDefaultsToFolded(t *testing.T) {
+func TestSubagentToolDetailIsFlat(t *testing.T) {
 	s := InitialState()
 	s = s.Reduce(agent.Event{
 		Type:  agent.EventToolUse,
@@ -282,15 +289,14 @@ func TestSubagentToolDetailDefaultsToFolded(t *testing.T) {
 
 	elements := Render(s, RenderOptions{})["body"].(map[string]any)["elements"].([]map[string]any)
 	for _, el := range elements {
-		if el["tag"] != "collapsible_panel" {
-			continue
+		if el["tag"] == "collapsible_panel" {
+			t.Fatalf("subagent call should be flat text, not a panel: %#v", el)
 		}
-		if expanded, _ := el["expanded"].(bool); expanded {
-			t.Fatalf("subagent detail should default to folded: %#v", el)
+		if content, _ := el["content"].(string); strings.Contains(content, "**Agent**") && strings.Contains(content, "检查测试失败") {
+			return
 		}
-		return
 	}
-	t.Fatal("subagent tool panel not rendered")
+	t.Fatal("subagent tool header not rendered")
 }
 
 func TestTotalTokensAndFormat(t *testing.T) {

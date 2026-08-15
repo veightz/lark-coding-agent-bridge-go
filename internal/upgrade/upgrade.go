@@ -93,6 +93,9 @@ func Run(opts Options) error {
 	if out2, err := build.CombinedOutput(); err != nil {
 		return fmt.Errorf("构建失败: %w\n%s", err, out2)
 	}
+	if err := maybeCodesign(tmpPath, out); err != nil {
+		return err
+	}
 
 	// Smoke-check the fresh binary.
 	if out2, err := exec.Command(tmpPath, "version").CombinedOutput(); err != nil {

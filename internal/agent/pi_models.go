@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-// ListModels queries Pi's structured RPC catalog. A short-lived, sessionless
+// ListModels queries the structured RPC catalog. A short-lived, sessionless
 // process keeps model discovery independent from any chat scope and does not
 // create conversation history.
 func (a *PiAdapter) ListModels(ctx context.Context, cwd string) ([]ModelInfo, error) {
@@ -55,18 +55,23 @@ func (a *PiAdapter) ListModels(ctx context.Context, cwd string) ([]ModelInfo, er
 		return out[i].DisplayName < out[j].DisplayName
 	})
 	if len(out) == 0 {
-		return nil, fmt.Errorf("Pi 当前配置没有可用模型")
+		return nil, fmt.Errorf("%s 当前配置没有可用模型", a.DisplayName())
 	}
 	return out, nil
 }
 
-// queryRPC sends a small batch of read-only commands to a temporary Pi RPC
+// queryRPC sends a small batch of read-only commands to a temporary RPC
 // process and returns each response's data keyed by request id.
 func (a *PiAdapter) queryRPC(ctx context.Context, cwd string, commands ...map[string]any) (map[string]map[string]any, error) {
 	binary := a.binary
 	if binary == "" {
-		binary = "pi"
+		if a.kindOrDefault().id == "omp" {
+			binary = "omp"
+		} else {
+			binary = "pi"
+		}
 	}
+	label := a.DisplayName()
 	cmd := agentCommandContext(ctx, a.runtime, binary, "--mode", "rpc", "--no-session")
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -83,7 +88,7 @@ func (a *PiAdapter) queryRPC(ctx context.Context, cwd string, commands ...map[st
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("启动 Pi RPC: %w", err)
+		return nil, fmt.Errorf("启动 %s RPC: %w", label, err)
 	}
 	defer func() {
 		_ = stdin.Close()
@@ -97,7 +102,7 @@ func (a *PiAdapter) queryRPC(ctx context.Context, cwd string, commands ...map[st
 	for _, command := range commands {
 		id, _ := command["id"].(string)
 		if id == "" {
-			return nil, fmt.Errorf("Pi RPC 查询命令缺少 id")
+			return nil, fmt.Errorf("%s RPC 查询命令缺少 id", label)
 		}
 		wanted[id] = true
 		data, err := json.Marshal(command)
@@ -105,7 +110,7 @@ func (a *PiAdapter) queryRPC(ctx context.Context, cwd string, commands ...map[st
 			return nil, err
 		}
 		if _, err := stdin.Write(append(data, '\n')); err != nil {
-			return nil, fmt.Errorf("写入 Pi RPC: %w", err)
+			return nil, fmt.Errorf("写入 %s RPC: %w", label, err)
 		}
 	}
 
@@ -115,7 +120,7 @@ func (a *PiAdapter) queryRPC(ctx context.Context, cwd string, commands ...map[st
 	for scanner.Scan() {
 		var raw map[string]any
 		if json.Unmarshal(scanner.Bytes(), &raw) != nil || stringField(raw, "type") != "response" {
-			// Pi extensions may emit fire-and-forget UI events during startup.
+			// Extensions / omp builtins may emit fire-and-forget UI events during startup.
 			continue
 		}
 		id := stringField(raw, "id")
@@ -124,7 +129,7 @@ func (a *PiAdapter) queryRPC(ctx context.Context, cwd string, commands ...map[st
 		}
 		success, _ := raw["success"].(bool)
 		if !success {
-			return nil, fmt.Errorf("Pi RPC %s: %s", stringField(raw, "command"), errorMessage(raw, "命令失败"))
+			return nil, fmt.Errorf("%s RPC %s: %s", label, stringField(raw, "command"), errorMessage(raw, "命令失败"))
 		}
 		data, _ := raw["data"].(map[string]any)
 		responses[id] = data
@@ -133,15 +138,15 @@ func (a *PiAdapter) queryRPC(ctx context.Context, cwd string, commands ...map[st
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("读取 Pi RPC: %w", err)
+		return nil, fmt.Errorf("读取 %s RPC: %w", label, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if text := strings.TrimSpace(stderr.String()); text != "" {
-		return nil, fmt.Errorf("Pi RPC 提前退出: %s", truncateRunes(text, 500))
+		return nil, fmt.Errorf("%s RPC 提前退出: %s", label, truncateRunes(text, 500))
 	}
-	return nil, fmt.Errorf("Pi RPC 在返回查询结果前退出")
+	return nil, fmt.Errorf("%s RPC 在返回查询结果前退出", label)
 }
 
 func piModelFullID(value any) string {

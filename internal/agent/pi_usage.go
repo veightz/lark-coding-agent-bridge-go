@@ -9,11 +9,12 @@ import (
 	"path/filepath"
 )
 
-// ReadUsage reports all-time local Pi activity. Pi can route requests to many
-// providers, so a single account quota would be misleading; session JSONL is
-// the authoritative source for token, cache and native cost totals.
+// ReadUsage reports all-time local session activity for this pi-family agent.
+// Multi-provider agents have no single account quota; session JSONL is the
+// source for token, cache and native cost totals. Scan root follows the kind's
+// default tree (pi → ~/.pi/agent, omp → ~/.omp/agent) unless env overrides.
 func (a *PiAdapter) ReadUsage(ctx context.Context) (UsageSnapshot, error) {
-	files, err := collectJSONL(piSessionsDir(a.Env), 2)
+	files, err := collectJSONL(a.sessionsDir(), 2)
 	if err != nil {
 		return UsageSnapshot{}, err
 	}
@@ -26,7 +27,11 @@ func (a *PiAdapter) ReadUsage(ctx context.Context) (UsageSnapshot, error) {
 			return UsageSnapshot{}, err
 		}
 	}
-	return UsageSnapshot{Provider: "Pi（本机会话）", Activity: activity}, nil
+	label := a.kindOrDefault().usageLabel
+	if label == "" {
+		label = "Pi（本机会话）"
+	}
+	return UsageSnapshot{Provider: label, Activity: activity}, nil
 }
 
 func addPiSessionUsage(ctx context.Context, path string, activity *UsageActivity) error {
@@ -153,19 +158,54 @@ func float64Field(data map[string]any, key string) float64 {
 	}
 }
 
+// sessionsDir is the session JSONL root for this adapter instance.
+func (a *PiAdapter) sessionsDir() string {
+	return piFamilySessionsDir(a.Env, a.kindOrDefault())
+}
+
+// configDir is the agent config tree for this adapter instance.
+func (a *PiAdapter) configDir() string {
+	return piFamilyConfigDir(a.Env, a.kindOrDefault())
+}
+
+// piSessionsDir is the package default for upstream pi (discovery / legacy callers).
 func piSessionsDir(overrides map[string]string) string {
+	return piFamilySessionsDir(overrides, piKind())
+}
+
+// ompSessionsDir is the package default for Oh My Pi discovery.
+func ompSessionsDir(overrides map[string]string) string {
+	return piFamilySessionsDir(overrides, ompKind())
+}
+
+func piFamilySessionsDir(overrides map[string]string, k piKindConfig) string {
 	if dir := envOverride(overrides, "PI_CODING_AGENT_SESSION_DIR"); dir != "" {
 		return dir
 	}
-	return filepath.Join(piConfigDir(overrides), "sessions")
+	return filepath.Join(piFamilyConfigDir(overrides, k), "sessions")
 }
 
 func piConfigDir(overrides map[string]string) string {
+	return piFamilyConfigDir(overrides, piKind())
+}
+
+func ompConfigDir(overrides map[string]string) string {
+	return piFamilyConfigDir(overrides, ompKind())
+}
+
+func piFamilyConfigDir(overrides map[string]string, k piKindConfig) string {
 	if dir := envOverride(overrides, "PI_CODING_AGENT_DIR"); dir != "" {
 		return dir
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".pi", "agent")
+	rel := k.defaultRel
+	if len(rel) == 0 {
+		rel = []string{".pi", "agent"}
+	}
+	parts := make([]string, 0, 1+len(rel))
+	parts = append(parts, home)
+	parts = append(parts, rel...)
+	return filepath.Join(parts...)
 }
 
 func envOverride(overrides map[string]string, key string) string {

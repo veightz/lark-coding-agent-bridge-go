@@ -1,5 +1,5 @@
 // lark-coding-agent-bridge-go bridges Feishu/Lark messenger with local
-// coding-agent CLIs (Claude Code, Codex CLI, pi, opencode) — a Go port of
+// coding-agent CLIs (Claude Code, Codex CLI, pi, omp, opencode, grok, kimi, cursor) — a Go port of
 // lark-channel-bridge (github.com/zarazhangrui/lark-coding-agent-bridge).
 //
 // Subcommands:
@@ -105,7 +105,7 @@ func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	var (
 		profileFlag   = fs.String("profile", "", "使用指定 profile（必填）")
-		agentFlag     = fs.String("agent", "", "agent 类型：claude | codex | pi | opencode")
+		agentFlag     = fs.String("agent", "", "agent 类型：claude | codex | pi | omp | opencode | grok | kimi | cursor")
 		workspaceFlag = fs.String("workspace", "", "初始工作目录")
 		appIDFlag     = fs.String("app-id", "", "已有应用的 App ID（跳过扫码创建）")
 	)
@@ -154,8 +154,8 @@ func run(profileName, agentKind, workspace, appID string) error {
 	// Chat access owner (ADR-0013): resolve Feishu app owner for whitelist.
 	br.StartOwnerRefresh()
 
-	// Ask IPC + Claude hook install (ADR-0008). Codex/OpenCode/Pi handle asks
-	// in-process and must not receive Claude settings or create hook files.
+	// Ask IPC + Claude hook install (ADR-0008). Codex/OpenCode/Pi/Grok handle
+	// asks in-process and must not receive Claude settings or create hook files.
 	if profile.AgentKind == config.AgentClaude {
 		askSrv := &ask.Server{Broker: br.Ask, Resolve: br.ResolveScopeRoute}
 		if askURL, aerr := askSrv.StartListen(); aerr != nil {
@@ -360,15 +360,22 @@ func chooseAgent() config.AgentKind {
 		{config.AgentClaude, "claude"},
 		{config.AgentCodex, "codex"},
 		{config.AgentPi, "pi"},
+		{config.AgentOmp, "omp"},
 		{config.AgentOpenCode, "opencode"},
+		{config.AgentGrok, "grok"},
+		{config.AgentKimi, "kimi"},
 	} {
 		if _, err := exec.LookPath(candidate.binary); err == nil {
 			installed = append(installed, candidate.kind)
 		}
 	}
+	// Cursor 官方二进制也叫 agent，不能 LookPath("agent")，否则会误绑本机 Grok。
+	if agent.ResolveCursorBinary() != "" {
+		installed = append(installed, config.AgentCursor)
+	}
 	switch len(installed) {
 	case 0:
-		fmt.Println("⚠️ 未检测到 claude / codex / pi / opencode CLI，默认使用 claude（请之后安装并登录）。")
+		fmt.Println("⚠️ 未检测到 claude / codex / pi / omp / opencode / grok / kimi / cursor CLI，默认使用 claude（请之后安装并登录）。")
 		return config.AgentClaude
 	case 1:
 		return installed[0]
@@ -427,6 +434,12 @@ func injectAgentEnv(adapter agent.Adapter, paths config.Paths, profileName strin
 	case *agent.PiAdapter:
 		a.Env = env
 	case *agent.OpenCodeAdapter:
+		a.Env = env
+	case *agent.GrokAdapter:
+		a.Env = env
+	case *agent.KimiAdapter:
+		a.Env = env
+	case *agent.CursorAdapter:
 		a.Env = env
 	}
 }

@@ -1,7 +1,8 @@
 // ACP is a minimal Agent Client Protocol (v1) client over stdio JSON-RPC.
 // It covers the headless-bridge subset: initialize, session/new,
-// session/prompt, session/cancel, session/update notifications, and
-// auto-answering session/request_permission.
+// session/load, session/prompt, session/cancel, session/update notifications,
+// auto-answering session/request_permission, and pluggable reverse RPCs
+// (e.g. Grok `_x.ai/ask_user_question`).
 //
 // Spec: https://agentclientprotocol.com/protocol/v1/schema
 package agent
@@ -13,11 +14,19 @@ import (
 	"io"
 	"os/exec"
 	"sync"
+
+	"lark-coding-agent-bridge-go/internal/config"
 )
 
 // acpUpdateHandler receives translated agent events; terminal events
 // (done/error) end the current prompt turn.
 type acpUpdateHandler func(events []Event)
+
+// acpReverseHandler handles agent→client reverse RPC requests.
+// Return true when the handler owns the response (sync or async via respond).
+// Return false to fall through to built-in handling (permission auto-allow,
+// or method-not-supported).
+type acpReverseHandler func(method string, id json.RawMessage, params json.RawMessage) bool
 
 type acpClient struct {
 	cmd    *exec.Cmd
@@ -30,12 +39,14 @@ type acpClient struct {
 	reqSeq  int
 	pending map[int]chan acpRPCResult
 
-	onUpdate acpUpdateHandler
+	onUpdate  acpUpdateHandler
+	onReverse acpReverseHandler
 
 	// negotiated at initialize
 	agentCapabilities map[string]any
 	agentName         string
 	agentVersion      string
+	authMethods       []string
 }
 
 type acpRPCResult struct {
@@ -60,8 +71,9 @@ type acpRPCMessage struct {
 }
 
 // startACPLike launches an ACP agent subprocess and performs initialize.
-func startACPLike(name string, args []string, cwd string, env map[string]string, onUpdate acpUpdateHandler) (*acpClient, error) {
-	cmd := exec.Command(name, args...)
+// runtime is optional (empty = direct exec); onReverse is optional.
+func startACPLike(name string, args []string, cwd string, env map[string]string, runtime config.AgentRuntime, onUpdate acpUpdateHandler, onReverse acpReverseHandler) (*acpClient, error) {
+	cmd := agentCommand(runtime, name, args...)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
@@ -83,11 +95,12 @@ func startACPLike(name string, args []string, cwd string, env map[string]string,
 	}
 
 	c := &acpClient{
-		cmd:      cmd,
-		stdin:    stdin,
-		stdout:   stdout,
-		pending:  map[int]chan acpRPCResult{},
-		onUpdate: onUpdate,
+		cmd:       cmd,
+		stdin:     stdin,
+		stdout:    stdout,
+		pending:   map[int]chan acpRPCResult{},
+		onUpdate:  onUpdate,
+		onReverse: onReverse,
 	}
 	go c.readLoop(stdout)
 	go io.Copy(io.Discard, stderr)
@@ -100,7 +113,9 @@ func startACPLike(name string, args []string, cwd string, env map[string]string,
 			delete(c.pending, id)
 		}
 		c.mu.Unlock()
-		c.onUpdate([]Event{{Type: EventError, Message: name + " ACP 进程意外退出", TerminationReason: TermFailed}})
+		if c.onUpdate != nil {
+			c.onUpdate([]Event{{Type: EventError, Message: name + " ACP 进程意外退出", TerminationReason: TermFailed}})
+		}
 	}()
 
 	if err := c.initialize(); err != nil {
@@ -141,6 +156,9 @@ func (c *acpClient) initialize() error {
 			Version string `json:"version"`
 		} `json:"agentInfo"`
 		AgentCapabilities map[string]any `json:"agentCapabilities"`
+		AuthMethods       []struct {
+			ID string `json:"id"`
+		} `json:"authMethods"`
 	}
 	if len(res) > 0 {
 		_ = json.Unmarshal(res, &out)
@@ -148,7 +166,36 @@ func (c *acpClient) initialize() error {
 	c.agentName = out.AgentInfo.Name
 	c.agentVersion = out.AgentInfo.Version
 	c.agentCapabilities = out.AgentCapabilities
+	c.authMethods = nil
+	for _, m := range out.AuthMethods {
+		if m.ID != "" {
+			c.authMethods = append(c.authMethods, m.ID)
+		}
+	}
 	return nil
+}
+
+// authenticate performs ACP authenticate (e.g. Cursor cursor_login).
+func (c *acpClient) authenticate(methodID string) error {
+	_, err := c.call("authenticate", map[string]any{"methodId": methodID})
+	if err != nil {
+		return fmt.Errorf("ACP authenticate %s 失败: %w", methodID, err)
+	}
+	return nil
+}
+
+func (c *acpClient) preferredAuthMethod(want string) string {
+	if want != "" {
+		for _, id := range c.authMethods {
+			if id == want {
+				return id
+			}
+		}
+	}
+	if len(c.authMethods) > 0 {
+		return c.authMethods[0]
+	}
+	return ""
 }
 
 // call sends a JSON-RPC request and waits for the correlated response.
@@ -235,12 +282,11 @@ func (c *acpClient) readLoop(stdout io.Reader) {
 
 		switch {
 		case msg.Method == "session/update":
-			c.onUpdate(translateACPUpdate(msg.Params))
+			if c.onUpdate != nil {
+				c.onUpdate(translateACPUpdate(msg.Params))
+			}
 
-		case msg.Method == "session/request_permission" && len(msg.ID) > 0:
-			c.respond(msg.ID, autoAllowPermission(msg.Params))
-
-		case len(msg.ID) > 0 && (msg.Result != nil || msg.Error != nil):
+		case len(msg.ID) > 0 && (msg.Result != nil || msg.Error != nil) && msg.Method == "":
 			// Response to one of our requests. IDs we issue are ints.
 			var id int
 			if err := json.Unmarshal(msg.ID, &id); err == nil {
@@ -253,6 +299,14 @@ func (c *acpClient) readLoop(stdout io.Reader) {
 			}
 
 		case len(msg.ID) > 0 && msg.Method != "":
+			// Reverse request (agent → client).
+			if c.onReverse != nil && c.onReverse(msg.Method, msg.ID, msg.Params) {
+				break
+			}
+			if msg.Method == "session/request_permission" {
+				c.respond(msg.ID, autoAllowPermission(msg.Params))
+				break
+			}
 			// Unknown reverse request (fs/*, terminal/*): refuse politely.
 			body, _ := json.Marshal(map[string]any{
 				"jsonrpc": "2.0",
@@ -262,6 +316,152 @@ func (c *acpClient) readLoop(stdout io.Reader) {
 			_ = c.write(append(body, '\n'))
 		}
 	}
+}
+
+// sessionNew creates a new ACP session; returns sessionId.
+func (c *acpClient) sessionNew(cwd string, meta map[string]any) (string, error) {
+	params := map[string]any{
+		"cwd":        cwd,
+		"mcpServers": []any{},
+	}
+	if len(meta) > 0 {
+		params["_meta"] = meta
+	}
+	res, err := c.call("session/new", params)
+	if err != nil {
+		return "", err
+	}
+	return parseACPSessionID(res)
+}
+
+// sessionLoad resumes an existing session by id. cwd is required by some agents.
+func (c *acpClient) sessionLoad(sessionID, cwd string, meta map[string]any) (string, error) {
+	params := map[string]any{
+		"sessionId":  sessionID,
+		"cwd":        cwd,
+		"mcpServers": []any{},
+	}
+	if len(meta) > 0 {
+		params["_meta"] = meta
+	}
+	res, err := c.call("session/load", params)
+	if err != nil {
+		return "", err
+	}
+	if sid, err := parseACPSessionID(res); err == nil && sid != "" {
+		return sid, nil
+	}
+	// Some agents return empty result on success and keep the requested id.
+	return sessionID, nil
+}
+
+// sessionPrompt sends a user prompt and waits until the turn completes.
+func (c *acpClient) sessionPrompt(sessionID, text string) (json.RawMessage, error) {
+	return c.call("session/prompt", map[string]any{
+		"sessionId": sessionID,
+		"prompt": []map[string]any{
+			{"type": "text", "text": text},
+		},
+	})
+}
+
+// sessionCancel asks the agent to abort the in-flight prompt.
+func (c *acpClient) sessionCancel(sessionID string) error {
+	return c.notify("session/cancel", map[string]any{"sessionId": sessionID})
+}
+
+func parseACPSessionID(res json.RawMessage) (string, error) {
+	if len(res) == 0 {
+		return "", fmt.Errorf("empty session result")
+	}
+	var out struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(res, &out); err != nil {
+		return "", err
+	}
+	if out.SessionID == "" {
+		return "", fmt.Errorf("session result missing sessionId")
+	}
+	return out.SessionID, nil
+}
+
+// usageEventsFromPromptResult extracts optional usage from a session/prompt result.
+func usageEventsFromPromptResult(res json.RawMessage, sessionID string) []Event {
+	if len(res) == 0 {
+		return nil
+	}
+	var out struct {
+		StopReason string `json:"stopReason"`
+		Meta       *struct {
+			SessionID        string `json:"sessionId"`
+			ModelID          string `json:"modelId"`
+			InputTokens      int    `json:"inputTokens"`
+			OutputTokens     int    `json:"outputTokens"`
+			CachedReadTokens int    `json:"cachedReadTokens"`
+			ReasoningTokens  int    `json:"reasoningTokens"`
+			TotalTokens      int    `json:"totalTokens"`
+			Usage            *struct {
+				InputTokens      int   `json:"inputTokens"`
+				OutputTokens     int   `json:"outputTokens"`
+				CachedReadTokens int   `json:"cachedReadTokens"`
+				ReasoningTokens  int   `json:"reasoningTokens"`
+				CostUsdTicks     int64 `json:"costUsdTicks"`
+			} `json:"usage"`
+		} `json:"_meta"`
+	}
+	if err := json.Unmarshal(res, &out); err != nil {
+		return nil
+	}
+	var events []Event
+	sid := sessionID
+	model := ""
+	if out.Meta != nil {
+		if out.Meta.SessionID != "" {
+			sid = out.Meta.SessionID
+		}
+		model = out.Meta.ModelID
+	}
+	if sid != "" || model != "" {
+		events = append(events, Event{Type: EventSystem, SessionID: sid, Model: model})
+	}
+	if out.Meta != nil {
+		inTok, outTok, cacheTok, reasonTok := out.Meta.InputTokens, out.Meta.OutputTokens, out.Meta.CachedReadTokens, out.Meta.ReasoningTokens
+		var cost float64
+		if u := out.Meta.Usage; u != nil {
+			if u.InputTokens > 0 {
+				inTok = u.InputTokens
+			}
+			if u.OutputTokens > 0 {
+				outTok = u.OutputTokens
+			}
+			if u.CachedReadTokens > 0 {
+				cacheTok = u.CachedReadTokens
+			}
+			if u.ReasoningTokens > 0 {
+				reasonTok = u.ReasoningTokens
+			}
+			if u.CostUsdTicks > 0 {
+				cost = float64(u.CostUsdTicks) / 1e10
+			}
+		}
+		if inTok > 0 || outTok > 0 || cacheTok > 0 || reasonTok > 0 || cost > 0 {
+			events = append(events, Event{
+				Type:                  EventUsage,
+				InputTokens:           inTok,
+				OutputTokens:          outTok,
+				CachedInputTokens:     cacheTok,
+				ReasoningOutputTokens: reasonTok,
+				CostUSD:               cost,
+			})
+		}
+	}
+	reason := TermNormal
+	if out.StopReason == "cancelled" || out.StopReason == "interrupted" {
+		reason = TermInterrupted
+	}
+	events = append(events, Event{Type: EventDone, SessionID: sid, TerminationReason: reason})
+	return events
 }
 
 // autoAllowPermission picks an allow option, preferring allow_always.
